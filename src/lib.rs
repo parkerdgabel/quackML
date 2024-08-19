@@ -1,11 +1,14 @@
-use std::error::Error;
+mod context;
 
-extern crate duckdb;
-extern crate duckdb_loadable_macros;
-extern crate libduckdb_sys;
+use std::{
+    error::Error,
+    ffi::{c_char, c_void, CString},
+};
+
+use crate::context::{init_database_context, DATABASE_CONTEXT};
+
 
 use duckdb::{
-    core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
     vtab::{BindInfo, Free, FunctionInfo, InitInfo, VTab},
     Connection, Result,
 };
@@ -16,6 +19,7 @@ use libduckdb_sys as ffi;
 // the "entrypoint" that duckdb will use to load the extension.
 #[duckdb_entrypoint]
 pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
-
+    // Define the struct to hold the connection
+    init_database_context(conn);
     Ok(())
 }

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-duckdb = {version = "1.0.0", features = ["vtab", "core"]}
+duckdb = {version = "1.0.0", features = ["vtab-loadable"]}
 duckdb-loadable-macros = "0.1.2"
-libduckdb-sys = "1.0.0"
+libduckdb-sys = {version = "1.0.0", features = ["bundled", "buildtime_bindgen"]}
+
+[lib]
+crate-type = ["cdylib"]
+name = "quack_ml"
