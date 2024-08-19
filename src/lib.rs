@@ -7,6 +7,7 @@ use std::{
 
 use crate::context::{init_database_context, DATABASE_CONTEXT};
 
+static SCHEMA: &str = include_str!("sql/schema.sql");
 
 use duckdb::{
     vtab::{BindInfo, Free, FunctionInfo, InitInfo, VTab},
@@ -21,5 +22,12 @@ use libduckdb_sys as ffi;
 pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     // Define the struct to hold the connection
     init_database_context(conn);
+    run_schema_query()?;
     Ok(())
+}
+
+
+fn run_schema_query() -> Result<()> {
+    let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
+    conn.execute_batch(SCHEMA)
 }
