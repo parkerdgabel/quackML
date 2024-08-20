@@ -1,4 +1,5 @@
 mod context;
+pub mod orm;
 
 use std::{
     error::Error,
@@ -15,6 +16,7 @@ use duckdb::{
 };
 use duckdb_loadable_macros::duckdb_entrypoint;
 use libduckdb_sys as ffi;
+use orm::load_datasets;
 
 // Exposes a extern C function named "quackml_ext_init" in the compiled dynamic library,
 // the "entrypoint" that duckdb will use to load the extension.
@@ -23,6 +25,7 @@ pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     // Define the struct to hold the connection
     init_database_context(&conn);
     run_schema_query()?;
+    load_datasets();
     Ok(())
 }
 
