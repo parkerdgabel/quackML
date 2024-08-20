@@ -9,6 +9,7 @@ duckdb-loadable-macros = "0.1.2"
 flate2 = "1.0.32"
 lazy_static = "1.5.0"
 libduckdb-sys = {version = "1.0.0", features = ["bundled", "buildtime_bindgen"]}
+serde = "1.0.208"
 
 [lib]
 crate-type = ["cdylib"]
