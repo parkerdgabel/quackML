@@ -1,5 +1,11 @@
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use flate2::read::GzDecoder;
 use crate::context::DATABASE_CONTEXT;
+use std::io::{self, Write, Read};
+use std::env::temp_dir;
+use lazy_static::lazy::Lazy;
+use lazy_static::lazy_static;
 
 #[derive(Debug)]
 pub struct Dataset {
@@ -167,4 +173,32 @@ fn drop_table_if_exists(table_name: &str) {
         // Drop the table if it exists
         conn.execute_batch(&format!("DROP TABLE IF EXISTS quackml.{}", table_name)).unwrap();
     }
+}
+
+lazy_static!(
+    static ref DATASETS: HashMap<& 'static str, & 'static [u8]> = {
+        let mut map: HashMap<&str, &[u8]> = HashMap::new();
+        map.insert("breast_cancer.csv", include_bytes!("datasets/breast_cancer.csv.gz"));
+        map.insert("diabetes.csv", include_bytes!("datasets/diabetes.csv.gz"));
+        map.insert("digits.csv", include_bytes!("datasets/digits.csv.gz"));
+        map.insert("iris.csv", include_bytes!("datasets/iris.csv.gz"));
+        map.insert("linnerud.csv", include_bytes!("datasets/linnerud.csv.gz"));
+        map.insert("wine.csv", include_bytes!("datasets/wine.csv.gz"));
+        map
+    };
+);
+
+pub fn load_datasets() {
+    let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
+    DATASETS.iter().for_each(|(name, data)| {
+        let mut decoder = GzDecoder::new(*data);
+        let mut csv = String::new();
+        decoder.read_to_string(&mut csv).unwrap();
+        let tmp_dir = temp_dir();
+        let file_path = tmp_dir.join(name);
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(csv.as_bytes()).unwrap();
+        let table_name = name.replace(".csv", "");
+        conn.execute_batch(&format!("CREATE TABLE quackml.{} AS FROM {}", table_name, name)).unwrap();
+    });
 }
