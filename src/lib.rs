@@ -21,7 +21,7 @@ use libduckdb_sys as ffi;
 #[duckdb_entrypoint]
 pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     // Define the struct to hold the connection
-    init_database_context(conn);
+    init_database_context(&conn);
     run_schema_query()?;
     Ok(())
 }

@@ -19,8 +19,22 @@ impl DatabaseContext {
 
 pub static mut DATABASE_CONTEXT: Option<DatabaseContext> = None;
 
-pub fn init_database_context(connection: duckdb::Connection) {
+pub fn init_database_context(connection: &duckdb::Connection) {
     unsafe {
-        DATABASE_CONTEXT = Some(DatabaseContext::new(&connection));
+        DATABASE_CONTEXT = Some(DatabaseContext::new(connection));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_database_context() {
+        let connection = duckdb::Connection::open_in_memory().unwrap();
+        init_database_context(&connection);
+        let database_context = unsafe { DATABASE_CONTEXT.as_ref().unwrap() };
+        // Check if the connection is the same
+        assert_eq!(&database_context.get_connection().path(), &connection.path());
     }
 }
