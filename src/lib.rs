@@ -1,4 +1,5 @@
 mod context;
+pub mod orm;
 
 use std::{
     error::Error,
