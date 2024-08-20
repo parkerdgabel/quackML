@@ -1,11 +1,10 @@
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use flate2::read::GzDecoder;
 use crate::context::DATABASE_CONTEXT;
-use std::io::{self, Write, Read};
-use std::env::temp_dir;
-use lazy_static::lazy::Lazy;
+use flate2::read::GzDecoder;
 use lazy_static::lazy_static;
+use std::collections::HashMap;
+use std::env::temp_dir;
+use std::fmt::{Display, Formatter};
+use std::io::{Read, Write};
 
 #[derive(Debug)]
 pub struct Dataset {
@@ -30,7 +29,6 @@ impl Display for Dataset {
         )
     }
 }
-
 
 impl Dataset {
     pub fn fold(&self, k: usize, folds: usize) -> Dataset {
@@ -87,7 +85,6 @@ impl TextDatasetType {
         }
     }
 }
-
 
 // TextClassificationDataset
 pub struct TextClassificationDataset {
@@ -171,14 +168,18 @@ fn drop_table_if_exists(table_name: &str) {
     .unwrap();
     if table_count == 1 {
         // Drop the table if it exists
-        conn.execute_batch(&format!("DROP TABLE IF EXISTS quackml.{}", table_name)).unwrap();
+        conn.execute_batch(&format!("DROP TABLE IF EXISTS quackml.{}", table_name))
+            .unwrap();
     }
 }
 
-lazy_static!(
-    static ref DATASETS: HashMap<& 'static str, & 'static [u8]> = {
+lazy_static! {
+    static ref DATASETS: HashMap<&'static str, &'static [u8]> = {
         let mut map: HashMap<&str, &[u8]> = HashMap::new();
-        map.insert("breast_cancer.csv", include_bytes!("datasets/breast_cancer.csv.gz"));
+        map.insert(
+            "breast_cancer.csv",
+            include_bytes!("datasets/breast_cancer.csv.gz"),
+        );
         map.insert("diabetes.csv", include_bytes!("datasets/diabetes.csv.gz"));
         map.insert("digits.csv", include_bytes!("datasets/digits.csv.gz"));
         map.insert("iris.csv", include_bytes!("datasets/iris.csv.gz"));
@@ -186,7 +187,7 @@ lazy_static!(
         map.insert("wine.csv", include_bytes!("datasets/wine.csv.gz"));
         map
     };
-);
+}
 
 pub fn load_datasets() {
     let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
@@ -199,6 +200,10 @@ pub fn load_datasets() {
         let mut file = std::fs::File::create(&file_path).unwrap();
         file.write_all(csv.as_bytes()).unwrap();
         let table_name = name.replace(".csv", "");
-        conn.execute_batch(&format!("CREATE TABLE quackml.{} AS FROM {}", table_name, name)).unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TABLE quackml.{} AS FROM {}",
+            table_name, name
+        ))
+        .unwrap();
     });
 }

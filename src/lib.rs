@@ -29,7 +29,6 @@ pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-
 fn run_schema_query() -> Result<()> {
     let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
     conn.execute_batch(SCHEMA)
