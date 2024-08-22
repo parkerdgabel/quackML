@@ -7,9 +7,12 @@ edition = "2021"
 duckdb = {version = "1.0.0", features = ["vtab-loadable"]}
 duckdb-loadable-macros = "0.1.2"
 flate2 = "1.0.32"
+indexmap = {version = "2.4.0", features = ["serde"]}
 lazy_static = "1.5.0"
 libduckdb-sys = {version = "1.0.0", features = ["bundled", "buildtime_bindgen"]}
-serde = "1.0.208"
+ndarray = "0.16.1"
+serde = {version = "1.0.208", features = ["derive"]}
+serde_json = "1.0.125"
 
 [lib]
 crate-type = ["cdylib"]
