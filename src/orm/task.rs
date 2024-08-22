@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum Task {
     regression,

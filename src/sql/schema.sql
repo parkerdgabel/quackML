@@ -36,8 +36,9 @@ CREATE TYPE strategy AS ENUM (
 );
 
 -- Projects Table to organize work
+CREATE SEQUENCE IF NOT EXISTS quackml.projects_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.projects (
-	id BIGINT PRIMARY KEY,
+	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.projects_id_seq'),
 	name TEXT NOT NULL,
 	task task NOT NULL,
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
@@ -49,8 +50,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS projects_name_idx ON quackml.projects(name);
 ---
 --- Snapshots freeze data for training
 ---
+CREATE SEQUENCE IF NOT EXISTS quackml.snapshots_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.snapshots(
-	id BIGINT PRIMARY KEY,
+	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.snapshots_id_seq'),
 	relation_name TEXT NOT NULL,
 	y_column_name TEXT[],
 	test_size FLOAT4 NOT NULL,
@@ -66,8 +68,9 @@ CREATE TABLE IF NOT EXISTS quackml.snapshots(
 ---
 --- Models save the learned parameters
 ---
+CREATE SEQUENCE IF NOT EXISTS quackml.models_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.models(
-	id BIGINT PRIMARY KEY,
+	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.models_id_seq'),
 	project_id BIGINT NOT NULL REFERENCES quackml.projects(id),
 	snapshot_id BIGINT REFERENCES quackml.snapshots(id),
 	num_features INT NOT NULL,
@@ -88,8 +91,9 @@ CREATE INDEX IF NOT EXISTS models_snapshot_id_idx ON quackml.models(snapshot_id)
 ---
 --- Deployments determine which model is live
 ---
+CREATE SEQUENCE IF NOT EXISTS quackml.deployments_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.deployments(
-	id BIGINT PRIMARY KEY,
+	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.deployments_id_seq'),
 	project_id BIGINT NOT NULL REFERENCES quackml.projects(id),
 	model_id BIGINT NOT NULL REFERENCES quackml.models(id),
 	strategy strategy NOT NULL,
@@ -101,8 +105,9 @@ CREATE INDEX IF NOT EXISTS deployments_model_id_created_at_idx ON quackml.deploy
 ---
 --- Distribute serialized models consistently for HA
 ---
+CREATE SEQUENCE IF NOT EXISTS quackml.files_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.files(
-	id BIGINT PRIMARY KEY,
+	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.files_id_seq'),
 	model_id BIGINT NOT NULL REFERENCES quackml.models(id),
 	path TEXT NOT NULL,
 	part INTEGER NOT NULL,
