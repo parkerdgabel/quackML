@@ -200,6 +200,7 @@ pub fn load_datasets() {
         let mut file = std::fs::File::create(&file_path).unwrap();
         file.write_all(csv.as_bytes()).unwrap();
         let table_name = name.replace(".csv", "");
+        drop_table_if_exists(&table_name);
         conn.execute_batch(&format!(
             "CREATE TABLE quackml.{} AS FROM {}",
             table_name, name
