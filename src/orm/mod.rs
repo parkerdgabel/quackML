@@ -1,6 +1,7 @@
 pub mod algorithm;
 pub mod dataset;
 pub mod sampling;
+pub mod search;
 pub mod snapshot;
 pub mod status;
 pub mod task;
@@ -11,6 +12,7 @@ pub use dataset::{
     TextPairClassificationDataset,
 };
 pub use sampling::Sampling;
+pub use search::Search;
 pub use snapshot::Snapshot;
 pub use status::Status;
 pub use task::Task;
