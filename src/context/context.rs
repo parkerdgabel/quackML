@@ -1,4 +1,3 @@
-
 pub struct DatabaseContext {
     connection: duckdb::Connection,
 }
@@ -35,6 +34,9 @@ mod tests {
         init_database_context(&connection);
         let database_context = unsafe { DATABASE_CONTEXT.as_ref().unwrap() };
         // Check if the connection is the same
-        assert_eq!(&database_context.get_connection().path(), &connection.path());
+        assert_eq!(
+            &database_context.get_connection().path(),
+            &connection.path()
+        );
     }
 }
