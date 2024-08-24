@@ -1,9 +1,12 @@
 use std::any::Any;
+use std::error::Error;
 use std::fmt::Debug;
 
-use duckdb::Error;
-
+pub mod lightgbm;
+pub mod linfa;
 pub mod transformers;
+pub mod xgboost;
+
 pub trait AToAny: 'static {
     fn as_any(&self) -> &dyn Any;
 }
@@ -25,16 +28,20 @@ pub trait Bindings: Send + Sync + Debug + AToAny {
         features: &[f32],
         num_features: usize,
         num_classes: usize,
-    ) -> Result<Vec<f32>, Error>;
+    ) -> Result<Vec<f32>, Box<dyn Error>>;
 
     /// Predict the probability of each class.
-    fn predict_proba(&self, features: &[f32], num_features: usize) -> Result<Vec<f32>, Error>;
+    fn predict_proba(
+        &self,
+        features: &[f32],
+        num_features: usize,
+    ) -> Result<Vec<f32>, Box<dyn Error>>;
 
     /// Serialize self to bytes
-    fn to_bytes(&self) -> Result<Vec<u8>, Error>;
+    fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>>;
 
     /// Deserialize self from bytes, with additional context
-    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>, Error>
+    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>, Box<dyn Error>>
     where
         Self: Sized;
 }

@@ -298,11 +298,11 @@ impl Model {
                         WHERE id = $1;",
                     params![id],
                     |row| {
-                        let project_id = row.get::<_,i64>(2).expect("project_id is i64");
+                        let project_id = row.get::<_,i64>(1).expect("project_id is i64");
                         let project = Project::find(project_id).expect("project doesn't exist");
-                        let snapshot_id = row.get::<_,i64>(3).expect("snapshot_id is i64");
+                        let snapshot_id = row.get::<_,i64>(2).expect("snapshot_id is i64");
                         let snapshot = Snapshot::find(snapshot_id).expect("snapshot doesn't exist");
-                        let algorithm = Algorithm::from_str(row.get::<_, String>(4).unwrap().as_str()).expect("algorithm is malformed");
+                        let algorithm = Algorithm::from_str(row.get::<_, String>(3).unwrap().as_str()).expect("algorithm is malformed");
                         let data = row.get::<_, Vec<u8>>(12).unwrap();
                         let num_features = snapshot.num_features();
                         let num_classes = match project.task {
@@ -322,9 +322,9 @@ impl Model {
                         };
                         let model = Model {
                             id: row.get(0)?,
-                            project_id: row.get(1)?,
-                            snapshot_id: row.get(2)?,
-                            algorithm: row.get::<_, String>(3).map(|s| s.as_str()).map(Algorithm::from_str).unwrap().unwrap(),
+                            project_id,
+                            snapshot_id,
+                            algorithm,
                             hyperparams: row.get::<_, String>(4).map(|s| s.as_str()).map(serde_json::from_str).unwrap().unwrap(),
                             status: row.get::<_, String>(5).map(|s| s.as_str()).map(Status::from_str).unwrap().unwrap(),
                             metrics: row.get::<_, String>(6).map(|s| s.as_str()).map(serde_json::from_str).unwrap().ok(),
@@ -345,6 +345,11 @@ impl Model {
                                 ),
                                 _ => panic!("Expected a timestamp"),
                             }).unwrap(),
+                            project,
+                            snapshot,
+                            bindings: Some(bindings),
+                            num_classes,
+                            num_features,
                         };
                         Ok(model)
                     },
