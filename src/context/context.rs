@@ -24,6 +24,13 @@ pub fn init_database_context(connection: &duckdb::Connection) {
     }
 }
 
+pub fn run<T>(
+    f: impl FnOnce(&duckdb::Connection) -> Result<T, duckdb::Error>,
+) -> Result<T, duckdb::Error> {
+    let database_context = unsafe { DATABASE_CONTEXT.as_ref().unwrap() };
+    f(database_context.get_connection().clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

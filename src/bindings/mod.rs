@@ -3,6 +3,7 @@ use std::fmt::Debug;
 
 use duckdb::Error;
 
+pub mod transformers;
 pub trait AToAny: 'static {
     fn as_any(&self) -> &dyn Any;
 }
