@@ -1,5 +1,6 @@
 use std::any::Any;
-use std::error::Error;
+
+use anyhow::Result;
 use std::fmt::Debug;
 
 pub mod lightgbm;
@@ -28,20 +29,16 @@ pub trait Bindings: Send + Sync + Debug + AToAny {
         features: &[f32],
         num_features: usize,
         num_classes: usize,
-    ) -> Result<Vec<f32>, Box<dyn Error>>;
+    ) -> Result<Vec<f32>>;
 
     /// Predict the probability of each class.
-    fn predict_proba(
-        &self,
-        features: &[f32],
-        num_features: usize,
-    ) -> Result<Vec<f32>, Box<dyn Error>>;
+    fn predict_proba(&self, features: &[f32], num_features: usize) -> Result<Vec<f32>>;
 
     /// Serialize self to bytes
-    fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn to_bytes(&self) -> Result<Vec<u8>>;
 
     /// Deserialize self from bytes, with additional context
-    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>, Box<dyn Error>>
+    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>>
     where
         Self: Sized;
 }

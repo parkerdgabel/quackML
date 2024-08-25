@@ -13,10 +13,10 @@ indexmap = {version = "2.4.0", features = ["serde"]}
 lazy_static = "1.5.0"
 libduckdb-sys = {version = "1.0.0", features = ["bundled", "buildtime_bindgen"]}
 lightgbm = { git = "https://github.com/postgresml/lightgbm-rs", branch = "main" }
-linfa = "0.7.0"
-linfa-linear = {version = "0.7.0", features = ["serde"]}
-linfa-logistic = {version = "0.7.0", features = ["serde"]}
-linfa-svm = {version = "0.7.0", features = ["serde"]}
+linfa = { git = "https://github.com/postgresml/linfa", branch = "master" }
+linfa-linear = { git = "https://github.com/postgresml/linfa", package = "linfa-linear" ,branch = "master", features = ["serde"] }
+linfa-logistic = { git = "https://github.com/postgresml/linfa", package = "linfa-logistic", branch = "master", features = ["serde"] }
+linfa-svm = { git = "https://github.com/postgresml/linfa", package = "linfa-svm", branch = "master", features = ["serde"] }
 ndarray = "0.16.1"
 once_cell = "1.19.0"
 parking_lot = "0.12.3"

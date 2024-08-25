@@ -22,3 +22,5 @@ pub use snapshot::Snapshot;
 pub use status::Status;
 pub use strategy::Strategy;
 pub use task::Task;
+
+pub type Hyperparams = serde_json::Map<std::string::String, serde_json::Value>;

@@ -3,7 +3,8 @@ use crate::context::DATABASE_CONTEXT;
 use crate::orm::TextDatasetType;
 use crate::{bindings::*, context};
 use chrono::{DateTime, Utc};
-use core::num;
+
+use anyhow::{anyhow, Result};
 use duckdb::params;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -61,7 +62,7 @@ impl Model {
         search: Option<Search>,
         search_params: serde_json::Value,
         search_args: serde_json::Value,
-    ) -> Model {
+    ) -> Result<Model> {
         let dataset = snapshot.tabular_dataset();
         let status = Status::in_progress;
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
@@ -109,18 +110,19 @@ impl Model {
             };
             Ok(model)
           });
-        let mut model = match result {
-            Ok(model) => model,
-            Err(e) => panic!("{:?}", e),
-        };
+        let mut model = result?;
 
-        model.fit(&dataset);
+        model.fit(&dataset)?;
 
-        model
+        Ok(model)
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn finetune(project: &Project, snapshot: &mut Snapshot, hyperparams: Value) -> Model {
+    pub fn finetune(
+        project: &Project,
+        snapshot: &mut Snapshot,
+        hyperparams: Value,
+    ) -> Result<Model> {
         let dataset_args = hyperparams.get("dataset_args").unwrap();
 
         // let dataset = snapshot.text_classification_dataset(dataset_args);
@@ -133,7 +135,7 @@ impl Model {
         } else if project.task == Task::conversation {
             TextDatasetType::Conversation(snapshot.conversation_dataset(dataset_args))
         } else {
-            panic!("Unsupported task for finetuning")
+            return Err(anyhow!("Unsupported task for finetuning"));
         };
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
 
@@ -181,55 +183,40 @@ impl Model {
             };
             Ok(model)
           });
-        let mut model = match result {
-            Ok(model) => model,
-            Err(e) => panic!("{:?}", e),
-        };
+        let mut model = result?;
 
         let id = model.id;
         let path = std::path::PathBuf::from(format!("/tmp/quackml/models/{id}"));
 
-        let metrics: HashMap<String, f64>;
-        match dataset {
+        let metrics: HashMap<String, f64> = match dataset {
             TextDatasetType::TextClassification(dataset) => {
-                metrics = match transformers::finetune_text_classification(
+                transformers::finetune_text_classification(
                     &project.task,
                     dataset,
                     &model.hyperparams,
                     &path,
                     project.id,
                     model.id,
-                ) {
-                    Ok(metrics) => metrics,
-                    Err(e) => panic!("{e}"),
-                };
+                )?
             }
             TextDatasetType::TextPairClassification(dataset) => {
-                metrics = match transformers::finetune_text_pair_classification(
+                transformers::finetune_text_pair_classification(
                     &project.task,
                     dataset,
                     &model.hyperparams,
                     &path,
                     project.id,
                     model.id,
-                ) {
-                    Ok(metrics) => metrics,
-                    Err(e) => panic!("{e}"),
-                };
+                )?
             }
-            TextDatasetType::Conversation(dataset) => {
-                metrics = match transformers::finetune_conversation(
-                    &project.task,
-                    dataset,
-                    &model.hyperparams,
-                    &path,
-                    project.id,
-                    model.id,
-                ) {
-                    Ok(metrics) => metrics,
-                    Err(e) => panic!("{e}"),
-                };
-            }
+            TextDatasetType::Conversation(dataset) => transformers::finetune_conversation(
+                &project.task,
+                dataset,
+                &model.hyperparams,
+                &path,
+                project.id,
+                model.id,
+            )?,
         };
 
         model.metrics = Some(json!(metrics));
@@ -245,18 +232,15 @@ impl Model {
             ],
             |row| Ok(row.get(0)?),
         );
-        match result {
-            Ok(id) => model.id = id,
-            Err(e) => panic!("{e}"),
-        }
+        model.id = result?;
 
         // Save the bindings.
         if path.is_dir() {
-            for entry in std::fs::read_dir(&path).unwrap() {
-                let path = entry.unwrap().path();
+            for entry in std::fs::read_dir(&path)? {
+                let path = entry?.path();
 
                 if path.is_file() {
-                    let bytes = std::fs::read(&path).unwrap();
+                    let bytes = std::fs::read(&path)?;
 
                     for (i, chunk) in bytes.chunks(100_000_000).enumerate() {
                         let result = conn
@@ -269,23 +253,20 @@ impl Model {
                                 chunk
                             ],
                         );
-                        match result {
-                            Ok(_) => (),
-                            Err(e) => panic!("{e}"),
-                        }
+                        result?;
                     }
                 }
             }
         } else {
-            panic!("Model checkpoint folder does not exist!")
+            return Err(anyhow!("Model checkpoint folder does not exist!"));
         }
 
         conn.execute(
             "UPDATE quackml.models SET status = $1::quackml.status WHERE id = $2",
             params![Status::successful.to_string(), model.id],
-        );
+        )?;
 
-        model
+        Ok(model)
     }
 
     fn find(id: i64) -> Result<Model> {
@@ -298,12 +279,12 @@ impl Model {
                         WHERE id = $1;",
                     params![id],
                     |row| {
-                        let project_id = row.get::<_,i64>(1).expect("project_id is i64");
-                        let project = Project::find(project_id).expect("project doesn't exist");
-                        let snapshot_id = row.get::<_,i64>(2).expect("snapshot_id is i64");
-                        let snapshot = Snapshot::find(snapshot_id).expect("snapshot doesn't exist");
-                        let algorithm = Algorithm::from_str(row.get::<_, String>(3).unwrap().as_str()).expect("algorithm is malformed");
-                        let data = row.get::<_, Vec<u8>>(12).unwrap();
+                        let project_id = row.get::<_,i64>(1)?;
+                        let project = Project::find(project_id)?;
+                        let snapshot_id = row.get::<_,i64>(2)?;
+                        let snapshot = Snapshot::find(snapshot_id)?;
+                        let algorithm = Algorithm::from_str(row.get::<_, String>(3)?.as_str())?;
+                        let data = row.get::<_, Vec<u8>>(12)?;
                         let num_features = snapshot.num_features();
                         let num_classes = match project.task {
                             Task::regression => 0,
@@ -315,16 +296,20 @@ impl Model {
                             Algorithm::linear => match project.task {
                                 Task::regression => linfa::LinearRegression::from_bytes(&data)?,
                                 Task::classification => linfa::LogisticRegression::from_bytes(&data)?,
-                                _ => bail!("No default runtime available for tasks other than `classification` and `regression` when using a linear algorithm."),
+                                _ => return Err(anyhow!("No default runtime available for tasks other than `classification` and `regression` when using a linear algorithm.")),
                             },
                             Algorithm::svm => linfa::Svm::from_bytes(&data)?,
-                            _ => todo!(), //smartcore_load(&data, task, algorithm, &hyperparams),
+                            _ => return Err(anyhow!("Unsupported algorithm")),
                         };
                         let model = Model {
                             id: row.get(0)?,
                             project_id,
                             snapshot_id,
                             algorithm,
+                            hyperparams: row.get::<_, String>(4).map(|s| s.as_str()).map(serde_json::from_str)???,
+                            status: row.get::<_, String>(5).map(|s| s.as_str()).map(Status::from_str)???,
+                            metrics: row.get::<_, String>(6).map(|s| s.as_str()).map(serde_json::from_str).transpose()?,
+                            search: row.get::<_, String>(7).map(|s| s.as_str()).map(Search::from_str).transpose()?,
                             hyperparams: row.get::<_, String>(4).map(|s| s.as_str()).map(serde_json::from_str).unwrap().unwrap(),
                             status: row.get::<_, String>(5).map(|s| s.as_str()).map(Status::from_str).unwrap().unwrap(),
                             metrics: row.get::<_, String>(6).map(|s| s.as_str()).map(serde_json::from_str).unwrap().ok(),

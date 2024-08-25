@@ -1,6 +1,5 @@
+use anyhow::Result;
 use rand::*;
-use std::error::Error;
-
 use xgboost::{Booster, DMatrix};
 
 use super::Bindings;
@@ -27,7 +26,7 @@ impl Bindings for Estimator {
         features: &[f32],
         num_features: usize,
         num_classes: usize,
-    ) -> Result<Vec<f32>, Box<dyn Error>> {
+    ) -> Result<Vec<f32>> {
         let x = DMatrix::from_dense(features, features.len() / num_features)?;
         let y = self.estimator.predict(&x)?;
         Ok(match num_classes {
@@ -46,17 +45,13 @@ impl Bindings for Estimator {
         })
     }
 
-    fn predict_proba(
-        &self,
-        features: &[f32],
-        num_features: usize,
-    ) -> Result<Vec<f32>, Box<dyn Error>> {
+    fn predict_proba(&self, features: &[f32], num_features: usize) -> Result<Vec<f32>> {
         let x = DMatrix::from_dense(features, features.len() / num_features)?;
         Ok(self.estimator.predict(&x)?)
     }
 
     /// Serialize self to bytes
-    fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn to_bytes(&self) -> Result<Vec<u8>> {
         let r: u64 = rand::random();
         let path = format!("/tmp/pgml_{}.bin", r);
         self.estimator.save(std::path::Path::new(&path))?;
@@ -66,7 +61,7 @@ impl Bindings for Estimator {
     }
 
     /// Deserialize self from bytes, with additional context
-    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>, Box<dyn Error>>
+    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>>
     where
         Self: Sized,
     {
