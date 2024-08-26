@@ -3,10 +3,14 @@ use std::any::Any;
 use anyhow::Result;
 use std::fmt::Debug;
 
+use crate::orm::{Dataset, Hyperparams};
+
 pub mod lightgbm;
 pub mod linfa;
 pub mod transformers;
 pub mod xgboost;
+
+pub type Fit = fn(dataset: &Dataset, hyperparams: &Hyperparams) -> Result<Box<dyn Bindings>>;
 
 pub trait AToAny: 'static {
     fn as_any(&self) -> &dyn Any;

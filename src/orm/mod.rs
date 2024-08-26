@@ -1,5 +1,6 @@
 pub mod algorithm;
 pub mod dataset;
+pub mod metrics;
 pub mod model;
 pub mod project;
 pub mod sampling;
@@ -14,6 +15,7 @@ pub use dataset::{
     load_datasets, ConversationDataset, Dataset, TextClassificationDataset, TextDatasetType,
     TextPairClassificationDataset,
 };
+pub use metrics::{calculate_r2, Average, ConfusionMatrix, ConfusionMatrixMetrics};
 pub use model::Model;
 pub use project::Project;
 pub use sampling::Sampling;
