@@ -58,8 +58,8 @@ CREATE TABLE IF NOT EXISTS quackml.snapshots(
 	test_size FLOAT4 NOT NULL,
 	test_sampling sampling NOT NULL,
 	status TEXT NOT NULL,
-	columns JSON,
-	analysis JSON,
+	columns TEXT,
+	analysis TEXT,
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
 	materialized BOOLEAN DEFAULT false
@@ -75,12 +75,12 @@ CREATE TABLE IF NOT EXISTS quackml.models(
 	snapshot_id BIGINT REFERENCES quackml.snapshots(id),
 	num_features INT NOT NULL,
 	algorithm TEXT NOT NULL,
-	hyperparams JSON NOT NULL,
+	hyperparams TEXT NOT NULL,
 	status TEXT NOT NULL,
-	metrics JSON,
+	metrics TEXT,
 	search TEXT,
-	search_params JSON NOT NULL,
-	search_args JSON NOT NULL,
+	search_params TEXT NOT NULL,
+	search_args TEXT NOT NULL,
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp()
 );

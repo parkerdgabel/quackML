@@ -797,7 +797,10 @@ impl Snapshot {
         (num_train_rows, num_test_rows)
     }
 
-    pub fn text_classification_dataset(&mut self, dataset_args: &str) -> TextClassificationDataset {
+    pub fn text_classification_dataset(
+        &mut self,
+        dataset_args: &Value,
+    ) -> TextClassificationDataset {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let mut stmt = conn.prepare(&self.select_sql()).unwrap();
 
@@ -812,7 +815,6 @@ impl Snapshot {
         let mut text_test: Vec<String> = Vec::with_capacity(num_test_rows);
         let mut class_test: Vec<String> = Vec::with_capacity(num_test_rows);
 
-        let dataset_args: Value = serde_json::from_str(dataset_args).unwrap();
         let class_column_value = dataset_args
             .get("class_column")
             .and_then(|v| v.as_str())
@@ -875,7 +877,7 @@ impl Snapshot {
 
     pub fn text_pair_classification_dataset(
         &mut self,
-        dataset_args: &str,
+        dataset_args: &Value,
     ) -> TextPairClassificationDataset {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let mut stmt = conn.prepare(&self.select_sql()).unwrap();
@@ -892,7 +894,6 @@ impl Snapshot {
         let mut text2_test: Vec<String> = Vec::with_capacity(num_test_rows);
         let mut class_test: Vec<String> = Vec::with_capacity(num_test_rows);
 
-        let dataset_args: Value = serde_json::from_str(dataset_args).unwrap();
         let text1_column_value = dataset_args
             .get("text1_column")
             .and_then(|v| v.as_str())
@@ -969,7 +970,7 @@ impl Snapshot {
         }
     }
 
-    pub fn conversation_dataset(&mut self, dataset_args: &str) -> ConversationDataset {
+    pub fn conversation_dataset(&mut self, dataset_args: &Value) -> ConversationDataset {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let mut stmt = conn.prepare(&self.select_sql()).unwrap();
         let num_rows = stmt.row_count();
@@ -983,7 +984,6 @@ impl Snapshot {
         let mut user_test: Vec<String> = Vec::with_capacity(num_test_rows);
         let mut assistant_test: Vec<String> = Vec::with_capacity(num_test_rows);
 
-        let dataset_args: Value = serde_json::from_str(dataset_args).unwrap();
         let system_column_value = dataset_args
             .get("system_column")
             .and_then(|v| v.as_str())

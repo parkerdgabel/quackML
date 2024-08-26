@@ -1,3 +1,0 @@
-imports_layout = "Horizontal"
-imports_granularity = "Crate"
-group_imports = "One"
