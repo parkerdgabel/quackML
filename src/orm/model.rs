@@ -539,11 +539,14 @@ impl Model {
                 metrics.insert("r2".to_string(), calculate_r2(&y_test, &y_hat));
                 metrics.insert(
                     "mean_absolute_error".to_string(),
-                    y_hat.mean_abs_err(&y_test).map(|v| v as f32).unwrap(),
+                    y_hat
+                        .mean_absolute_error(&y_test)
+                        .map(|v| v as f32)
+                        .unwrap(),
                 );
                 metrics.insert(
                     "mean_squared_error".to_string(),
-                    y_hat.mean_sq_err(&y_test).map(|v| v as f32).unwrap(),
+                    y_hat.mean_squared_error(&y_test).map(|v| v as f32).unwrap(),
                 );
             }
             Task::classification => {
