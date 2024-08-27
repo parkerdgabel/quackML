@@ -38,7 +38,7 @@ pub struct Model {
     pub project_id: i64,
     pub snapshot_id: i64,
     pub algorithm: Algorithm,
-    pub hyperparams: Value,
+    pub hyperparams: Hyperparams,
     // pub runtime: Runtime,
     pub status: Status,
     pub metrics: Option<Value>,
@@ -70,11 +70,30 @@ impl Model {
         project: &Project,
         snapshot: &mut Snapshot,
         algorithm: Algorithm,
-        hyperparams: serde_json::Value,
+        hyperparams: &Hyperparams,
         search: Option<Search>,
         search_params: serde_json::Value,
         search_args: serde_json::Value,
     ) -> Result<Model> {
+        // let mut model = Model {
+        //     id: 0,
+        //     project_id: project.id,
+        //     snapshot_id: snapshot.id,
+        //     algorithm,
+        //     hyperparams: &hyperparams.clone(),
+        //     status: Status::in_progress,
+        //     metrics: None,
+        //     search,
+        //     search_params,
+        //     search_args,
+        //     created_at: Utc::now(),
+        //     updated_at: Utc::now(),
+        //     project: project.clone(),
+        //     snapshot: snapshot.clone(),
+        //     bindings: None,
+        //     num_classes: 0,
+        //     num_features: 0,
+        // };
         let dataset = snapshot.tabular_dataset();
         let status = Status::in_progress;
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
@@ -88,10 +107,10 @@ impl Model {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 snapshot_id: row.get(2)?,
-                algorithm: row.get::<_, String>(3).map(|s| Algorithm::from_str(s.as_str())).unwrap().unwrap(),
-                hyperparams: row.get::<_, String>(5).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                status: row.get::<_, String>(6).map(|s| Status::from_str(s.as_str())).unwrap().unwrap(),
-                metrics: row.get::<_, String>(7).map(|s| serde_json::from_str(s.as_str())).unwrap().ok(),
+                algorithm: Algorithm::from_str(&row.get::<_, String>(3)?).unwrap(),
+                hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
+                metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
                 search: row.get::<_, String>(8).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
                 search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                 search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
@@ -161,13 +180,13 @@ impl Model {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 snapshot_id: row.get(2)?,
-                algorithm: row.get::<_, String>(3).map(|s| Algorithm::from_str(&s)).unwrap().unwrap(),
-                hyperparams: row.get::<_, String>(5).map(|s| serde_json::from_str(&s)).unwrap().unwrap(),
-                status: row.get::<_, String>(6).map(|s| Status::from_str(&s)).unwrap().unwrap(),
-                metrics: row.get::<_, String>(7).map(|s| serde_json::from_str(&s)).unwrap().ok(),
-                search: row.get::<_, String>(8).map(|s| Search::from_str(&s)).unwrap().ok(),
-                search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(&s)).unwrap().unwrap(),
-                search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(&s)).unwrap().unwrap(),
+                algorithm: Algorithm::from_str(&row.get::<_, String>(3)?).unwrap(),
+                hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
+                metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
+                search: row.get::<_, String>(8).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
+                search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
+                search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                 created_at: row.get::<_, duckdb::types::Value>(11).map(|v| match v {
                     duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
                         DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
@@ -298,7 +317,7 @@ impl Model {
                         let project = Project::find(project_id).unwrap();
                         let snapshot_id = row.get::<_,i64>(2)?;
                         let snapshot = Snapshot::find(snapshot_id).unwrap();
-                        let algorithm = Algorithm::from_str(row.get::<_, String>(3)?.as_str()).unwrap();
+                        let algorithm = Algorithm::from_str(&row.get::<_, String>(3)?).unwrap();
                         let data = row.get::<_, Vec<u8>>(12)?;
                         let num_features = snapshot.num_features();
                         let num_classes = match project.task {
@@ -321,12 +340,12 @@ impl Model {
                             project_id,
                             snapshot_id,
                             algorithm,
-                            hyperparams: row.get::<_, String>(4).map(|s| serde_json::from_str(s.as_str()).unwrap()).unwrap(),
-                            status: row.get::<_, String>(5).map(|s| Status::from_str(s.as_str()).unwrap()).unwrap(),
-                            metrics: row.get::<_, String>(6).map(|s| serde_json::from_str(s.as_str()).unwrap()).ok(),
-                            search: row.get::<_, String>(7).map(|s| Search::from_str(s.as_str()).unwrap()).ok(),
-                            search_params: row.get::<_, String>(8).map(|s| serde_json::from_str(s.as_str()).unwrap()).unwrap(),
-                            search_args: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str()).unwrap()).unwrap(),
+                            hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                            status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
+                            metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
+                            search: row.get::<_, String>(7).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
+                            search_params: row.get::<_, String>(8).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
+                            search_args: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                             created_at: row.get::<_, duckdb::types::Value>(10).map(|v| match v {
                                 duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
                                     DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
@@ -377,37 +396,37 @@ impl Model {
                 Algorithm::lightgbm => lightgbm::fit_regression,
                 Algorithm::linear => linfa::LinearRegression::fit,
                 Algorithm::svm => linfa::Svm::fit,
-                // Algorithm::lasso => sklearn::lasso_regression,
-                // Algorithm::elastic_net => sklearn::elastic_net_regression,
-                // Algorithm::ridge => sklearn::ridge_regression,
-                // Algorithm::random_forest => sklearn::random_forest_regression,
-                // Algorithm::orthogonal_matching_pursuit => {
-                //     sklearn::orthogonal_matching_pursuit_regression
-                // }
-                // Algorithm::bayesian_ridge => sklearn::bayesian_ridge_regression,
-                // Algorithm::automatic_relevance_determination => {
-                //     sklearn::automatic_relevance_determination_regression
-                // }
-                // Algorithm::stochastic_gradient_descent => {
-                //     sklearn::stochastic_gradient_descent_regression
-                // }
-                // Algorithm::passive_aggressive => sklearn::passive_aggressive_regression,
-                // Algorithm::ransac => sklearn::ransac_regression,
-                // Algorithm::theil_sen => sklearn::theil_sen_regression,
-                // Algorithm::huber => sklearn::huber_regression,
-                // Algorithm::quantile => sklearn::quantile_regression,
-                // Algorithm::kernel_ridge => sklearn::kernel_ridge_regression,
-                // Algorithm::gaussian_process => sklearn::gaussian_process_regression,
-                // Algorithm::nu_svm => sklearn::nu_svm_regression,
-                // Algorithm::ada_boost => sklearn::ada_boost_regression,
-                // Algorithm::bagging => sklearn::bagging_regression,
-                // Algorithm::extra_trees => sklearn::extra_trees_regression,
-                // Algorithm::gradient_boosting_trees => sklearn::gradient_boosting_trees_regression,
-                // Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_regression,
-                // Algorithm::least_angle => sklearn::least_angle_regression,
-                // Algorithm::lasso_least_angle => sklearn::lasso_least_angle_regression,
-                // Algorithm::linear_svm => sklearn::linear_svm_regression,
-                // Algorithm::catboost => sklearn::catboost_regression,
+                Algorithm::lasso => sklearn::lasso_regression,
+                Algorithm::elastic_net => sklearn::elastic_net_regression,
+                Algorithm::ridge => sklearn::ridge_regression,
+                Algorithm::random_forest => sklearn::random_forest_regression,
+                Algorithm::orthogonal_matching_pursuit => {
+                    sklearn::orthogonal_matching_pursuit_regression
+                }
+                Algorithm::bayesian_ridge => sklearn::bayesian_ridge_regression,
+                Algorithm::automatic_relevance_determination => {
+                    sklearn::automatic_relevance_determination_regression
+                }
+                Algorithm::stochastic_gradient_descent => {
+                    sklearn::stochastic_gradient_descent_regression
+                }
+                Algorithm::passive_aggressive => sklearn::passive_aggressive_regression,
+                Algorithm::ransac => sklearn::ransac_regression,
+                Algorithm::theil_sen => sklearn::theil_sen_regression,
+                Algorithm::huber => sklearn::huber_regression,
+                Algorithm::quantile => sklearn::quantile_regression,
+                Algorithm::kernel_ridge => sklearn::kernel_ridge_regression,
+                Algorithm::gaussian_process => sklearn::gaussian_process_regression,
+                Algorithm::nu_svm => sklearn::nu_svm_regression,
+                Algorithm::ada_boost => sklearn::ada_boost_regression,
+                Algorithm::bagging => sklearn::bagging_regression,
+                Algorithm::extra_trees => sklearn::extra_trees_regression,
+                Algorithm::gradient_boosting_trees => sklearn::gradient_boosting_trees_regression,
+                Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_regression,
+                Algorithm::least_angle => sklearn::least_angle_regression,
+                Algorithm::lasso_least_angle => sklearn::lasso_least_angle_regression,
+                Algorithm::linear_svm => sklearn::linear_svm_regression,
+                Algorithm::catboost => sklearn::catboost_regression,
                 _ => todo!("Unsupported regression algorithm: {:?}", self.algorithm),
             },
             Task::classification => match self.algorithm {
@@ -415,36 +434,36 @@ impl Model {
                 Algorithm::lightgbm => lightgbm::fit_classification,
                 Algorithm::linear => linfa::LogisticRegression::fit,
                 Algorithm::svm => linfa::Svm::fit,
-                // Algorithm::ridge => sklearn::ridge_classification,
-                // Algorithm::random_forest => sklearn::random_forest_classification,
-                // Algorithm::stochastic_gradient_descent => {
-                //     sklearn::stochastic_gradient_descent_classification
-                // }
-                // Algorithm::perceptron => sklearn::perceptron_classification,
-                // Algorithm::passive_aggressive => sklearn::passive_aggressive_classification,
-                // Algorithm::gaussian_process => sklearn::gaussian_process,
-                // Algorithm::nu_svm => sklearn::nu_svm_classification,
-                // Algorithm::ada_boost => sklearn::ada_boost_classification,
-                // Algorithm::bagging => sklearn::bagging_classification,
-                // Algorithm::extra_trees => sklearn::extra_trees_classification,
-                // Algorithm::gradient_boosting_trees => {
-                //     sklearn::gradient_boosting_trees_classification
-                // }
-                // Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_classification,
-                // Algorithm::linear_svm => sklearn::linear_svm_classification,
-                // Algorithm::catboost => sklearn::catboost_classification,
+                Algorithm::ridge => sklearn::ridge_classification,
+                Algorithm::random_forest => sklearn::random_forest_classification,
+                Algorithm::stochastic_gradient_descent => {
+                    sklearn::stochastic_gradient_descent_classification
+                }
+                Algorithm::perceptron => sklearn::perceptron_classification,
+                Algorithm::passive_aggressive => sklearn::passive_aggressive_classification,
+                Algorithm::gaussian_process => sklearn::gaussian_process,
+                Algorithm::nu_svm => sklearn::nu_svm_classification,
+                Algorithm::ada_boost => sklearn::ada_boost_classification,
+                Algorithm::bagging => sklearn::bagging_classification,
+                Algorithm::extra_trees => sklearn::extra_trees_classification,
+                Algorithm::gradient_boosting_trees => {
+                    sklearn::gradient_boosting_trees_classification
+                }
+                Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_classification,
+                Algorithm::linear_svm => sklearn::linear_svm_classification,
+                Algorithm::catboost => sklearn::catboost_classification,
                 _ => todo!("Unsupported classification algorithm: {:?}", self.algorithm),
             },
             Task::clustering => match self.algorithm {
-                // Algorithm::affinity_propagation => sklearn::affinity_propagation,
-                // Algorithm::birch => sklearn::birch,
-                // Algorithm::kmeans => sklearn::kmeans,
-                // Algorithm::mini_batch_kmeans => sklearn::mini_batch_kmeans,
-                // Algorithm::mean_shift => sklearn::mean_shift,
+                Algorithm::affinity_propagation => sklearn::affinity_propagation,
+                Algorithm::birch => sklearn::birch,
+                Algorithm::kmeans => sklearn::kmeans,
+                Algorithm::mini_batch_kmeans => sklearn::mini_batch_kmeans,
+                Algorithm::mean_shift => sklearn::mean_shift,
                 _ => todo!("Unsupported clustering algorithm: {:?}", self.algorithm),
             },
             Task::decomposition => match self.algorithm {
-                // Algorithm::pca => sklearn::pca,
+                Algorithm::pca => sklearn::pca,
                 _ => todo!("Unsupported decomposition algorithm: {:?}", self.algorithm),
             },
             _ => todo!("Unsupported task: {:?}", self.project.task),
@@ -458,7 +477,7 @@ impl Model {
         // Gather all hyperparams
         let mut all_hyperparam_names = Vec::new();
         let mut all_hyperparam_values = Vec::new();
-        for (key, value) in self.hyperparams.as_object().unwrap() {
+        for (key, value) in self.hyperparams.iter() {
             all_hyperparam_names.push(key.to_string());
             all_hyperparam_values.push(vec![value.clone()]);
         }
@@ -767,7 +786,7 @@ impl Model {
 
         if all_metrics.len() == 1 {
             self.bindings = Some(all_bindings.pop().unwrap());
-            self.hyperparams = json!(all_hyperparams.pop().unwrap());
+            self.hyperparams = all_hyperparams.pop().unwrap();
             self.metrics = Some(json!(all_metrics.pop().unwrap()));
         } else {
             let mut search_results = IndexMap::new();
@@ -867,7 +886,7 @@ impl Model {
             metrics.insert("search_results".to_string(), json!(search_results));
 
             self.bindings = best_estimator;
-            self.hyperparams = json!(best_hyperparams.unwrap().clone());
+            self.hyperparams = best_hyperparams.unwrap().clone();
             self.metrics = Some(json!(metrics));
         };
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
