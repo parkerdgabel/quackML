@@ -1,6 +1,7 @@
 //! Use virtualenv.
 
 use anyhow::Result;
+use duckdb::{params, Connection};
 use log::*;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -10,24 +11,26 @@ use crate::create_pymodule;
 
 create_pymodule!("/src/bindings/python/python.py");
 
-pub fn activate_venv(venv: &str) -> Result<bool> {
+pub fn activate_venv(venv: &Option<&str>) -> Result<bool> {
     Python::with_gil(|py| {
+        let create_venv: Py<PyAny> = get_module!(PY_MODULE).getattr(py, "create_venv")?;
         let activate_venv: Py<PyAny> = get_module!(PY_MODULE).getattr(py, "activate_venv")?;
-        let result: Py<PyAny> =
-            activate_venv.call1(py, PyTuple::new(py, &[venv.to_string().into_py(py)]))?;
+        let result: Py<PyAny> = match venv {
+            Some(venv) => {
+                activate_venv.call1(py, PyTuple::new(py, &[venv.to_string().into_py(py)]))?
+            }
+            None => create_venv.call0(py)?,
+        };
 
         Ok(result.extract(py)?)
     })
 }
 
 pub fn activate() -> Result<bool> {
-    match PGML_VENV.get() {
-        Some(venv) => activate_venv(&venv.to_string_lossy()),
-        None => Ok(false),
-    }
+    activate_venv(&Option::None)
 }
 
-pub fn pip_freeze() -> Result<TableIterator<'static, (name!(package, String),)>> {
+pub fn pip_freeze() -> Result<Vec<String>> {
     let packages = Python::with_gil(|py| -> Result<Vec<String>> {
         let freeze = get_module!(PY_MODULE).getattr(py, "freeze")?;
         let result = freeze.call0(py)?;
@@ -35,9 +38,7 @@ pub fn pip_freeze() -> Result<TableIterator<'static, (name!(package, String),)>>
         Ok(result.extract(py)?)
     })?;
 
-    Ok(TableIterator::new(
-        packages.into_iter().map(|package| (package,)),
-    ))
+    Ok(packages)
 }
 
 pub fn validate_dependencies() -> Result<bool> {
@@ -75,8 +76,28 @@ pub fn version() -> Result<String> {
 }
 
 pub fn package_version(name: &str) -> Result<String> {
+    let conn = Connection::open_in_memory()?;
+    conn.execute(
+        "CREATE TABLE packages (name VARCHAR, version VARCHAR)",
+        params![],
+    )?;
+
     Python::with_gil(|py| {
         let package = py.import(name)?;
-        Ok(package.getattr("__version__")?.extract()?)
-    })
+        let version: String = package.getattr("__version__")?.extract()?;
+        conn.execute(
+            "INSERT INTO packages (name, version) VALUES (?, ?)",
+            params![name, version],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })?;
+
+    let mut stmt = conn.prepare("SELECT version FROM packages WHERE name = ?")?;
+    let mut rows = stmt.query(params![name])?;
+
+    if let Some(row) = rows.next()? {
+        Ok(row.get(0)?)
+    } else {
+        Err(anyhow::anyhow!("Package not found"))
+    }
 }

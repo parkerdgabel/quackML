@@ -6,6 +6,14 @@ import sys
 
 __venv = None
 
+def create_venv(venv):
+    global __venv
+    if __venv == venv:
+        return True
+
+    if sys.platform in ('win32', 'win64', 'cygwin'):
+        activate_this = os.path.join(venv, 'Scripts', 'activate_this.py')
+
 def activate_venv(venv):
     global __venv
     if __venv == venv:
