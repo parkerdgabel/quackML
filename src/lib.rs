@@ -1,3 +1,4 @@
+pub mod api;
 pub mod bindings;
 mod context;
 pub mod orm;
