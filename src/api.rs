@@ -2,13 +2,16 @@ use std::default;
 use std::fmt::Write;
 use std::str::FromStr;
 
+use anyhow::anyhow;
+use duckdb::params;
 use log::*;
 use ndarray::Zip;
 
 #[cfg(feature = "python")]
 use serde_json::json;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
+use crate::context::context;
 #[cfg(feature = "python")]
 use crate::orm::*;
 
@@ -90,7 +93,7 @@ fn train(
     relation_name: Option<&str>,
     y_column_name: Option<&str>,
     algorithm: Option<Algorithm>,
-    hyperparams: Option<&Hyperparams>,
+    hyperparams: Option<Hyperparams>,
     search: Option<Search>,
     search_params: Option<Value>,
     search_args: Option<Value>,
@@ -99,36 +102,30 @@ fn train(
     automatic_deploy: Option<bool>,
     materialize_snapshot: Option<bool>,
     preprocess: Option<Value>,
-) -> TableIterator<
-    'static,
-    (
-        name!(project, String),
-        name!(task, String),
-        name!(algorithm, String),
-        name!(deployed, bool),
-    ),
-> {
+) -> Vec<(String, String, String, bool)> {
     let task = task.unwrap_or("NULL");
     let relation_name = relation_name.unwrap_or("NULL");
-    let y_column_name = y_column_name.unwrap_or("NULL");
+    let y_column_name = y_column_name.map(|y_column_name| vec![y_column_name.to_string()]);
     let algorithm = algorithm.unwrap_or(Algorithm::linear);
-    let hyperparams = hyperparams.unwrap_or_else(|| &serde_json::Map::new());
-    let search_params =
-        search_params.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    let search_args =
-        search_args.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let hyperparams = hyperparams.unwrap_or_else(|| serde_json::Map::new());
+    let search_params = search_params
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
+        .to_string();
+    let search_args = search_args
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
+        .to_string();
     let test_size = test_size.unwrap_or(0.25);
     let test_sampling = test_sampling.unwrap_or(Sampling::stratified);
     let materialize_snapshot = materialize_snapshot.unwrap_or(false);
-    let preprocess = preprocess.unwrap_or("'{}'".into());
+    let preprocess = preprocess.unwrap_or("'{}'".into()).to_string();
 
     train_joint(
         project_name,
         Some(task),
         Some(relation_name),
-        y_column_name.map(|y_column_name| vec![y_column_name.to_string()]),
+        y_column_name,
         algorithm,
-        hyperparams,
+        &hyperparams,
         search,
         search_params,
         search_args,
@@ -147,7 +144,7 @@ fn train_joint(
     relation_name: Option<&str>,
     y_column_name: Option<Vec<String>>,
     algorithm: Algorithm,
-    hyperparams: String,
+    hyperparams: &Map<String, Value>,
     search: Option<Search>,
     search_params: String,
     search_args: String,
@@ -156,35 +153,15 @@ fn train_joint(
     automatic_deploy: Option<bool>,
     materialize_snapshot: bool,
     preprocess: String,
-) -> TableIterator<
-    'static,
-    (
-        name!(project, String),
-        name!(task, String),
-        name!(algorithm, String),
-        name!(deployed, bool),
-    ),
-> {
+) -> Vec<(String, String, String, bool)> {
     let task = task.map(|t| Task::from_str(t).unwrap());
-    let relation_name = relation_name.unwrap_or("NULL");
-    let y_column_name = y_column_name.unwrap_or(None);
-    let algorithm = algorithm.unwrap_or(Algorithm::linear);
-    let hyperparams = hyperparams.unwrap_or("'{}'".into());
-    let search_params = search_params.unwrap_or("'{}'".into());
-    let search_args = search_args.unwrap_or("'{}'".into());
-    let test_size = test_size.unwrap_or(0.25);
-    let test_sampling = test_sampling.unwrap_or(Sampling::stratified);
-    let automatic_deploy = automatic_deploy.unwrap_or(Some(true));
-    let materialize_snapshot = materialize_snapshot.unwrap_or(false);
-    let preprocess = preprocess.unwrap_or("'{}'".into());
-
     let project = match Project::find_by_name(project_name) {
         Some(project) => project,
         None => Project::create(
             project_name,
             match task {
                 Some(task) => task,
-                None => error!(
+                None => panic!(
                     "Project `{}` does not exist. To create a new project, you must specify a `task`.",
                     project_name
                 ),
@@ -226,7 +203,7 @@ fn train_joint(
                 test_size,
                 test_sampling,
                 materialize_snapshot,
-                preprocess,
+                &preprocess,
             );
 
             if materialize_snapshot {
@@ -260,34 +237,42 @@ fn train_joint(
         algorithm,
         hyperparams,
         search,
-        search_params,
-        search_args,
+        search_params.into(),
+        search_args.into(),
     );
 
-    let new_metrics: &serde_json::Value = &model.metrics.unwrap();
+    let new_metrics: &serde_json::Value =
+        &model.as_ref().ok().and_then(|m| m.metrics.clone()).unwrap();
     let new_metrics = new_metrics.as_object().unwrap();
 
-    let deployed_metrics = Spi::get_one_with_args::<String>(
-        "
-        SELECT models.metrics
-        FROM pgml.models
-        JOIN pgml.deployments
-            ON deployments.model_id = models.id
-        JOIN pgml.projects
-            ON projects.id = deployments.project_id
-        WHERE projects.name = $1
-        ORDER by deployments.created_at DESC
-        LIMIT 1;",
-        vec![(PgBuiltInOids::TEXTOID.oid(), project_name.into_datum())],
-    );
+    let deployed_metrics = context::run(|conn| {
+        conn.query_row(
+            "
+            SELECT models.metrics
+            FROM quackml.models
+            JOIN quackml.deployments
+                ON deployments.model_id = models.id
+            JOIN quackml.projects
+                ON projects.id = deployments.project_id
+            WHERE projects.name = $1
+            ORDER by deployments.created_at DESC
+            LIMIT 1;
+            ",
+            params![project_name],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|e| anyhow!("Failed to get deployed metrics: {}", e))
+    });
 
     let mut deploy = true;
 
     match automatic_deploy {
         // Deploy only if metrics are better than previous model, or if its the first model
         Some(true) | None => {
-            if let Ok(Some(deployed_metrics)) = deployed_metrics {
-                if let Some(deployed_metrics_obj) = serde_json::from_str(&deployed_metrics).ok() {
+            if let Ok(deployed_metrics) = deployed_metrics {
+                if let Some(deployed_metrics_obj) =
+                    serde_json::from_str::<serde_json::Value>(&deployed_metrics).ok()
+                {
                     let default_target_metric = project.task.default_target_metric();
                     let deployed_metric = deployed_metrics_obj
                         .get(&default_target_metric)
@@ -304,7 +289,7 @@ fn train_joint(
                         (Some(deployed), Some(new)) => {
                             // only compare metrics when both new and old model have metrics to compare
                             if project.task.value_is_better(deployed, new) {
-                                warning!(
+                                log::info!(
                                     "New model's {} is not better than current model. New: {}, Current {}",
                                     &default_target_metric,
                                     new,
@@ -314,93 +299,85 @@ fn train_joint(
                             }
                         }
                         (None, None) => {
-                            warning!("No metrics available for both deployed and new model. Deploying new model.")
+                            info!("No metrics available for both deployed and new model. Deploying new model.")
                         }
                         (Some(_deployed), None) => {
-                            warning!("No metrics for new model. Retaining old model.");
+                            info!("No metrics for new model. Retaining old model.");
                             deploy = false;
                         }
                         (None, Some(_new)) => {
-                            warning!("No metrics for deployed model. Deploying new model.")
+                            info!("No metrics for deployed model. Deploying new model.")
                         }
                     }
                 } else {
-                    warning!("Failed to parse deployed model metrics. Check data types of model metadata on pgml.models.metrics");
+                    info!("Failed to parse deployed model metrics. Check data types of model metadata on pgml.models.metrics");
                     deploy = false;
                 }
             }
         }
         Some(false) => {
-            warning!("Automatic deployment disabled via configuration.");
+            info!("Automatic deployment disabled via configuration.");
             deploy = false;
         }
     };
+
     if deploy {
-        project.deploy(model.id, Strategy::new_score);
+        project.deploy(model.as_ref().unwrap().id, Strategy::new_score);
     } else {
-        warning!("Not deploying newly trained model.");
+        info!("Not deploying newly trained model.");
     }
 
-    TableIterator::new(vec![(
+    vec![(
         project.name,
         project.task.to_string(),
-        model.algorithm.to_string(),
+        model.unwrap().algorithm.to_string(),
         deploy,
-    )])
+    )]
 }
 
-fn deploy_model(
-    model_id: i64,
-) -> TableIterator<
-    'static,
-    (
-        name!(project, String),
-        name!(strategy, String),
-        name!(algorithm, String),
-    ),
-> {
+fn deploy_model(model_id: i64) -> Vec<(String, String, String)> {
     let model = unwrap_or_error!(Model::find_cached(model_id));
 
-    let project_id = Spi::get_one_with_args::<i64>(
-        "SELECT projects.id from pgml.projects JOIN pgml.models ON models.project_id = projects.id WHERE models.id = $1",
-        vec![(PgBuiltInOids::INT8OID.oid(), model_id.into_datum())],
-    )
-        .unwrap();
-
-    let project_id = project_id.unwrap_or_else(|| error!("Project does not exist."));
+    let project_id = context::run(|conn| {
+        conn.query_row(
+            "SELECT projects.id from pgml.projects JOIN pgml.models ON models.project_id = projects.id WHERE models.id = $1",
+            params![model_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| anyhow!("Failed to get project id: {}", e))
+    }).expect("Failed to get project id");
 
     let project = Project::find(project_id).unwrap();
     project.deploy(model_id, Strategy::specific);
 
-    TableIterator::new(vec![(
+    vec![(
         project.name,
         Strategy::specific.to_string(),
         model.algorithm.to_string(),
-    )])
+    )]
 }
 
 fn deploy_strategy(
     project_name: &str,
     strategy: Strategy,
     algorithm: Option<Algorithm>,
-) -> TableIterator<
-    'static,
-    (
-        name!(project, String),
-        name!(strategy, String),
-        name!(algorithm, String),
-    ),
-> {
-    let (project_id, task) = Spi::get_two_with_args::<i64, String>(
-        "SELECT id, task::TEXT from pgml.projects WHERE name = $1",
-        vec![(PgBuiltInOids::TEXTOID.oid(), project_name.into_datum())],
-    )
-    .unwrap();
+) -> Vec<(String, String, String)> {
+    let (project_id, task) = context::run(|conn| {
+        conn.query_row(
+            "SELECT id, task::TEXT from pgml.projects WHERE name = $1",
+            params![project_name],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0).unwrap(),
+                    row.get::<_, String>(1).unwrap(),
+                ))
+            },
+        )
+        .map_err(|e| anyhow!("Failed to get project id: {}", e))
+    })
+    .expect("Failed to get project id");
 
-    let project_id =
-        project_id.unwrap_or_else(|| error!("Project named `{}` does not exist.", project_name));
-
-    let task = Task::from_str(&task.unwrap()).unwrap();
+    let task = Task::from_str(&task).unwrap();
 
     let mut sql = "SELECT models.id, models.algorithm::TEXT FROM pgml.models JOIN pgml.projects ON projects.id = models.project_id".to_string();
     let mut predicate = "\nWHERE projects.name = $1".to_string();
@@ -447,22 +424,21 @@ fn deploy_strategy(
         _ => error!("invalid strategy"),
     }
     sql += "\nLIMIT 1";
-    let (model_id, algorithm) = Spi::get_two_with_args::<i64, String>(
-        &sql,
-        vec![(PgBuiltInOids::TEXTOID.oid(), project_name.into_datum())],
-    )
-    .unwrap();
-    let model_id = model_id.expect("No qualified models exist for this deployment.");
-    let algorithm = algorithm.expect("No qualified models exist for this deployment.");
+    let (model_id, algorithm) = context::run(|conn| {
+        conn.query_row(&sql, params![project_name], |row| {
+            Ok((
+                row.get::<_, i64>(0).unwrap(),
+                row.get::<_, String>(1).unwrap(),
+            ))
+        })
+        .map_err(|e| anyhow!("Failed to get model id: {}", e))
+    })
+    .expect("Failed to get model id");
 
     let project = Project::find(project_id).unwrap();
     project.deploy(model_id, strategy);
 
-    TableIterator::new(vec![(
-        project_name.to_string(),
-        strategy.to_string(),
-        algorithm,
-    )])
+    vec![(project_name.to_string(), strategy.to_string(), algorithm)]
 }
 
 fn predict_f32(project_name: &str, features: Vec<f32>) -> f32 {
@@ -477,17 +453,14 @@ fn predict_i16(project_name: &str, features: Vec<i16>) -> f32 {
     predict_f32(project_name, features.iter().map(|&i| i as f32).collect())
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict")]
 fn predict_i32(project_name: &str, features: Vec<i32>) -> f32 {
     predict_f32(project_name, features.iter().map(|&i| i as f32).collect())
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict")]
 fn predict_i64(project_name: &str, features: Vec<i64>) -> f32 {
     predict_f32(project_name, features.iter().map(|&i| i as f32).collect())
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict")]
 fn predict_bool(project_name: &str, features: Vec<bool>) -> f32 {
     predict_f32(
         project_name,
@@ -495,17 +468,14 @@ fn predict_bool(project_name: &str, features: Vec<bool>) -> f32 {
     )
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict_proba")]
 fn predict_proba(project_name: &str, features: Vec<f32>) -> Vec<f32> {
     predict_model_proba(Project::get_deployed_model_id(project_name), features)
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict_joint")]
 fn predict_joint(project_name: &str, features: Vec<f32>) -> Vec<f32> {
     predict_model_joint(Project::get_deployed_model_id(project_name), features)
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict_batch")]
 fn predict_batch(project_name: &str, features: Vec<f32>) -> SetOfIterator<'static, f32> {
     SetOfIterator::new(predict_model_batch(
         Project::get_deployed_model_id(project_name),
@@ -513,14 +483,12 @@ fn predict_batch(project_name: &str, features: Vec<f32>) -> SetOfIterator<'stati
     ))
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "decompose")]
 fn decompose(project_name: &str, vector: Vec<f32>) -> Vec<f32> {
     let model_id = Project::get_deployed_model_id(project_name);
     let model = unwrap_or_error!(Model::find_cached(model_id));
     unwrap_or_error!(model.decompose(&vector))
 }
 
-#[pg_extern(immutable, parallel_safe, strict, name = "predict")]
 fn predict_row(project_name: &str, row: pgrx::datum::AnyElement) -> f32 {
     predict_model_row(Project::get_deployed_model_id(project_name), row)
 }
