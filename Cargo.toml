@@ -20,7 +20,7 @@ flate2 = "1.0.32"
 indexmap = {version = "2.4.0", features = ["serde"]}
 itertools = "0.13.0"
 lazy_static = "1.5.0"
-libduckdb-sys = {version = "1.0.0", features = ["bundled", "buildtime_bindgen"]}
+libduckdb-sys = {version = "1.0.0", features = ["bundled", "buildtime_bindgen", "loadable_extension"]}
 lightgbm = { git = "https://github.com/postgresml/lightgbm-rs", branch = "main" }
 linfa = { git = "https://github.com/postgresml/linfa", branch = "master" }
 linfa-linear = { git = "https://github.com/postgresml/linfa", package = "linfa-linear" ,branch = "master", features = ["serde"] }

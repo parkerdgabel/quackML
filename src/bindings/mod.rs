@@ -68,6 +68,7 @@ macro_rules! get_module {
     };
 }
 
+pub mod langchain;
 pub mod lightgbm;
 pub mod linfa;
 pub mod python;
