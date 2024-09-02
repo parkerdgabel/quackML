@@ -543,19 +543,23 @@ fn predict_model_row(model_id: i64, row: &mut Rows) -> f32 {
 fn snapshot(
     relation_name: &str,
     y_column_name: &str,
-    test_size: default!(f32, 0.25),
-    test_sampling: default!(Sampling, "'stratified'"),
-    preprocess: default!(JsonB, "'{}'"),
-) -> TableIterator<'static, (name!(relation, String), name!(y_column_name, String))> {
+    test_size: Option<f32>,
+    test_sampling: Option<Sampling>,
+    preprocess: Option<serde_json::Value>,
+) -> Vec<(String, String)> {
+    let test_size = test_size.unwrap_or(0.25);
+    let test_sampling = test_sampling.unwrap_or(Sampling::stratified);
+    let preprocess = preprocess.unwrap_or(serde_json::json!({}));
+
     Snapshot::create(
         relation_name,
         Some(vec![y_column_name.to_string()]),
         test_size,
         test_sampling,
         true,
-        preprocess,
+        &preprocess.to_string(),
     );
-    TableIterator::new(vec![(relation_name.to_string(), y_column_name.to_string())])
+    vec![(relation_name.to_string(), y_column_name.to_string())]
 }
 
 #[pg_extern]
