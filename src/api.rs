@@ -562,78 +562,65 @@ fn snapshot(
     vec![(relation_name.to_string(), y_column_name.to_string())]
 }
 
-#[pg_extern]
-fn load_dataset(
-    source: &str,
-    subset: default!(Option<String>, "NULL"),
-    limit: default!(Option<i64>, "NULL"),
-    kwargs: default!(JsonB, "'{}'"),
-) -> TableIterator<'static, (name!(table_name, String), name!(rows, i64))> {
-    // cast limit since pgrx doesn't support usize
-    let limit: Option<usize> = limit.map(|limit| limit.try_into().unwrap());
-    let (name, rows) = match source {
-        "breast_cancer" => dataset::load_breast_cancer(limit),
-        "diabetes" => dataset::load_diabetes(limit),
-        "digits" => dataset::load_digits(limit),
-        "iris" => dataset::load_iris(limit),
-        "linnerud" => dataset::load_linnerud(limit),
-        "wine" => dataset::load_wine(limit),
-        _ => {
-            let rows =
-                match crate::bindings::transformers::load_dataset(source, subset, limit, &kwargs.0)
-                {
-                    Ok(rows) => rows,
-                    Err(e) => error!("{e}"),
-                };
-            (source.into(), rows as i64)
-        }
-    };
-
-    TableIterator::new(vec![(name, rows)])
-}
+// fn load_dataset(
+//     source: &str,
+//     subset: default!(Option<String>, "NULL"),
+//     limit: default!(Option<i64>, "NULL"),
+//     kwargs: default!(JsonB, "'{}'"),
+// ) -> TableIterator<'static, (name!(table_name, String), name!(rows, i64))> {
+//     // cast limit since pgrx doesn't support usize
+//     let limit: Option<usize> = limit.map(|limit| limit.try_into().unwrap());
+//     let (name, rows) = match source {
+//         "breast_cancer" => dataset::load_breast_cancer(limit),
+//         "diabetes" => dataset::load_diabetes(limit),
+//         "digits" => dataset::load_digits(limit),
+//         "iris" => dataset::load_iris(limit),
+//         "linnerud" => dataset::load_linnerud(limit),
+//         "wine" => dataset::load_wine(limit),
+//         _ => {
+//             let rows =
+//                 match crate::bindings::transformers::load_dataset(source, subset, limit, &kwargs.0)
+//                 {
+//                     Ok(rows) => rows,
+//                     Err(e) => error!("{e}"),
+//                 };
+//             (source.into(), rows as i64)
+//         }
+//     };
+//
+//     TableIterator::new(vec![(name, rows)])
+// }
 
 #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "embed")]
-pub fn embed(transformer: &str, text: &str, kwargs: default!(JsonB, "'{}'")) -> Vec<f32> {
-    match crate::bindings::transformers::embed(transformer, vec![text], &kwargs.0) {
+pub fn embed(transformer: &str, text: &str, kwargs: serde_json::Value) -> Vec<f32> {
+    match crate::bindings::transformers::embed(transformer, vec![text], &kwargs) {
         Ok(output) => output.first().unwrap().to_vec(),
-        Err(e) => error!("{e}"),
+        Err(e) => panic!("{e}"),
     }
 }
 
 #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "embed")]
 pub fn embed_batch(
     transformer: &str,
     inputs: Vec<&str>,
-    kwargs: default!(JsonB, "'{}'"),
-) -> SetOfIterator<'static, Vec<f32>> {
-    match crate::bindings::transformers::embed(transformer, inputs, &kwargs.0) {
-        Ok(output) => SetOfIterator::new(output),
-        Err(e) => error!("{e}"),
+    kwargs: serde_json::Value,
+) -> Vec<Vec<f32>> {
+    match crate::bindings::transformers::embed(transformer, inputs, &kwargs) {
+        Ok(output) => output,
+        Err(e) => panic!("{e}"),
     }
 }
 
 #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "rank")]
 pub fn rank(
     transformer: &str,
     query: &str,
     documents: Vec<&str>,
-    kwargs: default!(JsonB, "'{}'"),
-) -> TableIterator<
-    'static,
-    (
-        name!(corpus_id, i64),
-        name!(score, f64),
-        name!(text, Option<String>),
-    ),
-> {
-    match crate::bindings::transformers::rank(transformer, query, documents, &kwargs.0) {
-        Ok(output) => {
-            TableIterator::new(output.into_iter().map(|x| (x.corpus_id, x.score, x.text)))
-        }
-        Err(e) => error!("{e}"),
+    kwargs: serde_json::Value,
+) -> Vec<crate::bindings::transformers::RankResult> {
+    match crate::bindings::transformers::rank(transformer, query, documents, &kwargs) {
+        Ok(output) => output,
+        Err(e) => panic!("{e}"),
     }
 }
 
@@ -651,24 +638,17 @@ pub fn rank(
 /// ```postgresql
 /// SELECT pgml.clear_gpu_cache(memory_usage => 0.5);
 /// ```
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "clear_gpu_cache")]
-pub fn clear_gpu_cache(memory_usage: default!(Option<f32>, "NULL")) -> bool {
+pub fn clear_gpu_cache(memory_usage: Option<f32>) -> bool {
     match crate::bindings::transformers::clear_gpu_cache(memory_usage) {
         Ok(success) => success,
-        Err(e) => error!("{e}"),
+        Err(e) => panic!("{e}"),
     }
 }
 
-#[pg_extern(immutable, parallel_safe)]
-pub fn chunk(
-    splitter: &str,
-    text: &str,
-    kwargs: default!(JsonB, "'{}'"),
-) -> TableIterator<'static, (name!(chunk_index, i64), name!(chunk, String))> {
-    let chunks = match crate::bindings::langchain::chunk(splitter, text, &kwargs.0) {
+pub fn chunk(splitter: &str, text: &str, kwargs: serde_json::Value) -> Vec<(i64, String)> {
+    let chunks = match crate::bindings::langchain::chunk(splitter, text, &kwargs) {
         Ok(chunks) => chunks,
-        Err(e) => error!("{e}"),
+        Err(e) => panic!("{e}"),
     };
 
     let chunks = chunks
@@ -677,467 +657,450 @@ pub fn chunk(
         .map(|(i, chunk)| (i as i64 + 1, chunk))
         .collect::<Vec<(i64, String)>>();
 
-    TableIterator::new(chunks)
+    chunks
 }
 
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform")]
 #[allow(unused_variables)] // cache is maintained for api compatibility
 pub fn transform_json(
-    task: JsonB,
-    args: default!(JsonB, "'{}'"),
-    inputs: default!(Vec<&str>, "ARRAY[]::TEXT[]"),
-    cache: default!(bool, false),
-) -> JsonB {
-    if let Err(err) = crate::bindings::transformers::whitelist::verify_task(&task.0) {
-        error!("{err}");
-    }
-
-    match crate::bindings::transformers::transform(&task.0, &args.0, inputs) {
-        Ok(output) => JsonB(output),
-        Err(e) => error!("{e}"),
+    task: serde_json::Value,
+    args: serde_json::Value,
+    inputs: Vec<&str>,
+) -> serde_json::Value {
+    match crate::bindings::transformers::transform(&task, &args, inputs) {
+        Ok(output) => output,
+        Err(e) => panic!("{e}"),
     }
 }
 
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform")]
 #[allow(unused_variables)] // cache is maintained for api compatibility
 pub fn transform_string(
     task: String,
-    args: default!(JsonB, "'{}'"),
-    inputs: default!(Vec<&str>, "ARRAY[]::TEXT[]"),
-    cache: default!(bool, false),
-) -> JsonB {
-    let task_json = json!({ "task": task });
-    if let Err(err) = crate::bindings::transformers::whitelist::verify_task(&task_json) {
-        error!("{err}");
-    }
-    match crate::bindings::transformers::transform(&task_json, &args.0, inputs) {
-        Ok(output) => JsonB(output),
-        Err(e) => error!("{e}"),
-    }
-}
-
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform")]
-#[allow(unused_variables)] // cache is maintained for api compatibility
-pub fn transform_conversational_json(
-    task: JsonB,
-    args: default!(JsonB, "'{}'"),
-    inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
-    cache: default!(bool, false),
-) -> JsonB {
-    if !task.0["task"]
-        .as_str()
-        .is_some_and(|v| v == "conversational")
-    {
-        error!(
-            "ARRAY[]::JSONB inputs for transform should only be used with a conversational task"
-        );
-    }
-    if let Err(err) = crate::bindings::transformers::whitelist::verify_task(&task.0) {
-        error!("{err}");
-    }
-    match crate::bindings::transformers::transform(&task.0, &args.0, inputs) {
-        Ok(output) => JsonB(output),
-        Err(e) => error!("{e}"),
-    }
-}
-
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform")]
-#[allow(unused_variables)] // cache is maintained for api compatibility
-pub fn transform_conversational_string(
-    task: String,
-    args: default!(JsonB, "'{}'"),
-    inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
-    cache: default!(bool, false),
-) -> JsonB {
-    if task != "conversational" {
-        error!(
-            "ARRAY[]::JSONB inputs for transform should only be used with a conversational task"
-        );
-    }
-    let task_json = json!({ "task": task });
-    if let Err(err) = crate::bindings::transformers::whitelist::verify_task(&task_json) {
-        error!("{err}");
-    }
-    match crate::bindings::transformers::transform(&task_json, &args.0, inputs) {
-        Ok(output) => JsonB(output),
-        Err(e) => error!("{e}"),
-    }
-}
-
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform_stream")]
-#[allow(unused_variables)] // cache is maintained for api compatibility
-pub fn transform_stream_json(
-    task: JsonB,
-    args: default!(JsonB, "'{}'"),
-    input: default!(&str, "''"),
-    cache: default!(bool, false),
-) -> SetOfIterator<'static, JsonB> {
-    // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
-    let python_iter =
-        crate::bindings::transformers::transform_stream_iterator(&task.0, &args.0, input)
-            .map_err(|e| error!("{e}"))
-            .unwrap();
-    SetOfIterator::new(python_iter)
-}
-
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform_stream")]
-#[allow(unused_variables)] // cache is maintained for api compatibility
-pub fn transform_stream_string(
-    task: String,
-    args: default!(JsonB, "'{}'"),
-    input: default!(&str, "''"),
-    cache: default!(bool, false),
-) -> SetOfIterator<'static, JsonB> {
-    let task_json = json!({ "task": task });
-    // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
-    let python_iter =
-        crate::bindings::transformers::transform_stream_iterator(&task_json, &args.0, input)
-            .map_err(|e| error!("{e}"))
-            .unwrap();
-    SetOfIterator::new(python_iter)
-}
-
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform_stream")]
-#[allow(unused_variables)] // cache is maintained for api compatibility
-pub fn transform_stream_conversational_json(
-    task: JsonB,
-    args: default!(JsonB, "'{}'"),
-    inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
-    cache: default!(bool, false),
-) -> SetOfIterator<'static, JsonB> {
-    if !task.0["task"]
-        .as_str()
-        .is_some_and(|v| v == "conversational")
-    {
-        error!("ARRAY[]::JSONB inputs for transform_stream should only be used with a conversational task");
-    }
-    // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
-    let python_iter =
-        crate::bindings::transformers::transform_stream_iterator(&task.0, &args.0, inputs)
-            .map_err(|e| error!("{e}"))
-            .unwrap();
-    SetOfIterator::new(python_iter)
-}
-
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
-#[pg_extern(immutable, parallel_safe, name = "transform_stream")]
-#[allow(unused_variables)] // cache is maintained for api compatibility
-pub fn transform_stream_conversational_string(
-    task: String,
-    args: default!(JsonB, "'{}'"),
-    inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
-    cache: default!(bool, false),
-) -> SetOfIterator<'static, JsonB> {
-    if task != "conversational" {
-        error!("ARRAY::JSONB inputs for transform_stream should only be used with a conversational task");
-    }
-    let task_json = json!({ "task": task });
-    // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
-    let python_iter =
-        crate::bindings::transformers::transform_stream_iterator(&task_json, &args.0, inputs)
-            .map_err(|e| error!("{e}"))
-            .unwrap();
-    SetOfIterator::new(python_iter)
-}
-
-#[cfg(feature = "python")]
-#[pg_extern(immutable, parallel_safe, name = "generate")]
-fn generate(project_name: &str, inputs: &str, config: default!(JsonB, "'{}'")) -> String {
-    generate_batch(project_name, Vec::from([inputs]), config)
-        .first()
-        .unwrap()
-        .to_string()
-}
-
-#[cfg(feature = "python")]
-#[pg_extern(immutable, parallel_safe, name = "generate")]
-fn generate_batch(
-    project_name: &str,
+    args: serde_json::Value,
     inputs: Vec<&str>,
-    config: default!(JsonB, "'{}'"),
-) -> Vec<String> {
-    match crate::bindings::transformers::generate(
-        Project::get_deployed_model_id(project_name),
-        inputs,
-        config,
-    ) {
+) -> serde_json::Value {
+    let task_json = json!({ "task": task });
+    match crate::bindings::transformers::transform(&task_json, &args, inputs) {
         Ok(output) => output,
-        Err(e) => error!("{e}"),
+        Err(e) => panic!("{e}"),
     }
 }
 
-#[cfg(feature = "python")]
-#[allow(clippy::too_many_arguments)]
-#[pg_extern(parallel_safe)]
-fn tune(
-    project_name: &str,
-    task: default!(Option<&str>, "NULL"),
-    relation_name: default!(Option<&str>, "NULL"),
-    _y_column_name: default!(Option<&str>, "NULL"),
-    model_name: default!(Option<&str>, "NULL"),
-    hyperparams: default!(JsonB, "'{}'"),
-    test_size: default!(f32, 0.25),
-    test_sampling: default!(Sampling, "'stratified'"),
-    automatic_deploy: default!(Option<bool>, true),
-    materialize_snapshot: default!(bool, false),
-) -> TableIterator<
-    'static,
-    (
-        name!(status, String),
-        name!(task, String),
-        name!(algorithm, String),
-        name!(deployed, bool),
-    ),
-> {
-    let task = task.map(|t| Task::from_str(t).unwrap());
-    let preprocess = JsonB(serde_json::from_str("{}").unwrap());
-    let project = match Project::find_by_name(project_name) {
-        Some(project) => project,
-        None => Project::create(
-            project_name,
-            match task {
-                Some(task) => task,
-                None => error!(
-                    "Project `{}` does not exist. To create a new project, provide the task.",
-                    project_name
-                ),
-            },
-        ),
-    };
-
-    if task.is_some() && task.unwrap() != project.task {
-        error!(
-            "Project `{:?}` already exists with a different task: `{:?}`. Create a new project instead.",
-            project.name, project.task
-        );
-    }
-
-    let mut snapshot = match relation_name {
-        None => {
-            let snapshot = project.last_snapshot().expect(
-                "You must pass a `relation_name` and `y_column_name` to snapshot the first time you train a model.",
-            );
-
-            info!("Using existing snapshot from {}", snapshot.snapshot_name(),);
-
-            snapshot
-        }
-
-        Some(relation_name) => {
-            info!(
-                "Snapshotting table \"{}\", this may take a little while...",
-                relation_name
-            );
-
-            let snapshot = Snapshot::create(
-                relation_name,
-                None,
-                test_size,
-                test_sampling,
-                materialize_snapshot,
-                preprocess,
-            );
-
-            if materialize_snapshot {
-                info!(
-                    "Snapshot of table \"{}\" created and saved in {}",
-                    relation_name,
-                    snapshot.snapshot_name(),
-                );
-            }
-
-            snapshot
-        }
-    };
-
-    // algorithm will be transformers, stash the model_name in a hyperparam for v1 compatibility.
-    let mut hyperparams = hyperparams.0.as_object().unwrap().clone();
-    hyperparams.insert(String::from("model_name"), json!(model_name));
-    hyperparams.insert(String::from("project_name"), json!(project_name));
-    let hyperparams = JsonB(json!(hyperparams));
-
-    // # Default repeatable random state when possible
-    // let algorithm = Model.algorithm_from_name_and_task(algorithm, task);
-    // if "random_state" in algorithm().get_params() and "random_state" not in hyperparams:
-    //     hyperparams["random_state"] = 0
-    let model = Model::finetune(&project, &mut snapshot, &hyperparams);
-    let new_metrics: &serde_json::Value = &model.metrics.unwrap().0;
-    let new_metrics = new_metrics.as_object().unwrap();
-
-    let deployed_metrics = Spi::get_one_with_args::<JsonB>(
-        "
-        SELECT models.metrics
-        FROM pgml.models
-        JOIN pgml.deployments
-            ON deployments.model_id = models.id
-        JOIN pgml.projects
-            ON projects.id = deployments.project_id
-        WHERE projects.name = $1
-        ORDER by deployments.created_at DESC
-        LIMIT 1;",
-        vec![(PgBuiltInOids::TEXTOID.oid(), project_name.into_datum())],
-    );
-
-    let mut deploy = true;
-    match automatic_deploy {
-        // Deploy only if metrics are better than previous model.
-        Some(true) | None => {
-            if let Ok(Some(deployed_metrics)) = deployed_metrics {
-                let deployed_metrics = deployed_metrics.0.as_object().unwrap();
-
-                let deployed_value = deployed_metrics
-                    .get(&project.task.default_target_metric())
-                    .and_then(|value| value.as_f64())
-                    .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
-
-                // Get the value for the default target metric from new_metrics or provide a default value
-                let new_value = new_metrics
-                    .get(&project.task.default_target_metric())
-                    .and_then(|value| value.as_f64())
-                    .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
-
-                if project.task.value_is_better(deployed_value, new_value) {
-                    deploy = false;
-                }
-            }
-        }
-
-        Some(false) => deploy = false,
-    };
-
-    if deploy {
-        project.deploy(model.id, Strategy::new_score);
-    }
-
-    TableIterator::new(vec![(
-        project.name,
-        project.task.to_string(),
-        model.algorithm.to_string(),
-        deploy,
-    )])
-}
-
-#[cfg(feature = "python")]
-#[pg_extern(name = "sklearn_f1_score")]
-pub fn sklearn_f1_score(ground_truth: Vec<f32>, y_hat: Vec<f32>) -> f32 {
-    unwrap_or_error!(crate::bindings::sklearn::f1(&ground_truth, &y_hat))
-}
-
-#[cfg(feature = "python")]
-#[pg_extern(name = "sklearn_r2_score")]
-pub fn sklearn_r2_score(ground_truth: Vec<f32>, y_hat: Vec<f32>) -> f32 {
-    unwrap_or_error!(crate::bindings::sklearn::r2(&ground_truth, &y_hat))
-}
-
-#[cfg(feature = "python")]
-#[pg_extern(name = "sklearn_regression_metrics")]
-pub fn sklearn_regression_metrics(ground_truth: Vec<f32>, y_hat: Vec<f32>) -> JsonB {
-    let metrics = unwrap_or_error!(crate::bindings::sklearn::regression_metrics(
-        &ground_truth,
-        &y_hat,
-    ));
-    JsonB(json!(metrics))
-}
-
-#[cfg(feature = "python")]
-#[pg_extern(name = "sklearn_classification_metrics")]
-pub fn sklearn_classification_metrics(
-    ground_truth: Vec<f32>,
-    y_hat: Vec<f32>,
-    num_classes: i64,
-) -> JsonB {
-    let metrics = unwrap_or_error!(crate::bindings::sklearn::classification_metrics(
-        &ground_truth,
-        &y_hat,
-        num_classes as _
-    ));
-
-    JsonB(json!(metrics))
-}
-
-#[pg_extern]
-pub fn dump_all(path: &str) {
-    let p = std::path::Path::new(path).join("projects.csv");
-    Spi::run(&format!(
-        "COPY pgml.projects TO '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("snapshots.csv");
-    Spi::run(&format!(
-        "COPY pgml.snapshots TO '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("models.csv");
-    Spi::run(&format!(
-        "COPY pgml.models TO '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("files.csv");
-    Spi::run(&format!(
-        "COPY pgml.files TO '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("deployments.csv");
-    Spi::run(&format!(
-        "COPY pgml.deployments TO '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-}
-
-#[pg_extern]
-pub fn load_all(path: &str) {
-    let p = std::path::Path::new(path).join("projects.csv");
-    Spi::run(&format!(
-        "COPY pgml.projects FROM '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("snapshots.csv");
-    Spi::run(&format!(
-        "COPY pgml.snapshots FROM '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("models.csv");
-    Spi::run(&format!(
-        "COPY pgml.models FROM '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("files.csv");
-    Spi::run(&format!(
-        "COPY pgml.files FROM '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-
-    let p = std::path::Path::new(path).join("deployments.csv");
-    Spi::run(&format!(
-        "COPY pgml.deployments FROM '{}' CSV HEADER",
-        p.to_str().unwrap()
-    ))
-    .unwrap();
-}
-
+// pub fn transform_conversational_json(
+//     task: JsonB,
+//     args: default!(JsonB, "'{}'"),
+//     inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
+//     cache: default!(bool, false),
+// ) -> JsonB {
+//     if !task.0["task"]
+//         .as_str()
+//         .is_some_and(|v| v == "conversational")
+//     {
+//         error!(
+//             "ARRAY[]::JSONB inputs for transform should only be used with a conversational task"
+//         );
+//     }
+//     if let Err(err) = crate::bindings::transformers::whitelist::verify_task(&task.0) {
+//         error!("{err}");
+//     }
+//     match crate::bindings::transformers::transform(&task.0, &args.0, inputs) {
+//         Ok(output) => JsonB(output),
+//         Err(e) => error!("{e}"),
+//     }
+// }
+//
+// #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+// #[pg_extern(immutable, parallel_safe, name = "transform")]
+// #[allow(unused_variables)] // cache is maintained for api compatibility
+// pub fn transform_conversational_string(
+//     task: String,
+//     args: default!(JsonB, "'{}'"),
+//     inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
+//     cache: default!(bool, false),
+// ) -> JsonB {
+//     if task != "conversational" {
+//         error!(
+//             "ARRAY[]::JSONB inputs for transform should only be used with a conversational task"
+//         );
+//     }
+//     let task_json = json!({ "task": task });
+//     if let Err(err) = crate::bindings::transformers::whitelist::verify_task(&task_json) {
+//         error!("{err}");
+//     }
+//     match crate::bindings::transformers::transform(&task_json, &args.0, inputs) {
+//         Ok(output) => JsonB(output),
+//         Err(e) => error!("{e}"),
+//     }
+// }
+//
+// #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+// #[pg_extern(immutable, parallel_safe, name = "transform_stream")]
+// #[allow(unused_variables)] // cache is maintained for api compatibility
+// pub fn transform_stream_json(
+//     task: JsonB,
+//     args: default!(JsonB, "'{}'"),
+//     input: default!(&str, "''"),
+//     cache: default!(bool, false),
+// ) -> SetOfIterator<'static, JsonB> {
+//     // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
+//     let python_iter =
+//         crate::bindings::transformers::transform_stream_iterator(&task.0, &args.0, input)
+//             .map_err(|e| error!("{e}"))
+//             .unwrap();
+//     SetOfIterator::new(python_iter)
+// }
+//
+// #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+// #[pg_extern(immutable, parallel_safe, name = "transform_stream")]
+// #[allow(unused_variables)] // cache is maintained for api compatibility
+// pub fn transform_stream_string(
+//     task: String,
+//     args: default!(JsonB, "'{}'"),
+//     input: default!(&str, "''"),
+//     cache: default!(bool, false),
+// ) -> SetOfIterator<'static, JsonB> {
+//     let task_json = json!({ "task": task });
+//     // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
+//     let python_iter =
+//         crate::bindings::transformers::transform_stream_iterator(&task_json, &args.0, input)
+//             .map_err(|e| error!("{e}"))
+//             .unwrap();
+//     SetOfIterator::new(python_iter)
+// }
+//
+// #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+// #[pg_extern(immutable, parallel_safe, name = "transform_stream")]
+// #[allow(unused_variables)] // cache is maintained for api compatibility
+// pub fn transform_stream_conversational_json(
+//     task: JsonB,
+//     args: default!(JsonB, "'{}'"),
+//     inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
+//     cache: default!(bool, false),
+// ) -> SetOfIterator<'static, JsonB> {
+//     if !task.0["task"]
+//         .as_str()
+//         .is_some_and(|v| v == "conversational")
+//     {
+//         error!("ARRAY[]::JSONB inputs for transform_stream should only be used with a conversational task");
+//     }
+//     // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
+//     let python_iter =
+//         crate::bindings::transformers::transform_stream_iterator(&task.0, &args.0, inputs)
+//             .map_err(|e| error!("{e}"))
+//             .unwrap();
+//     SetOfIterator::new(python_iter)
+// }
+//
+// #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+// #[pg_extern(immutable, parallel_safe, name = "transform_stream")]
+// #[allow(unused_variables)] // cache is maintained for api compatibility
+// pub fn transform_stream_conversational_string(
+//     task: String,
+//     args: default!(JsonB, "'{}'"),
+//     inputs: default!(Vec<JsonB>, "ARRAY[]::JSONB[]"),
+//     cache: default!(bool, false),
+// ) -> SetOfIterator<'static, JsonB> {
+//     if task != "conversational" {
+//         error!("ARRAY::JSONB inputs for transform_stream should only be used with a conversational task");
+//     }
+//     let task_json = json!({ "task": task });
+//     // We can unwrap this becuase if there is an error the current transaction is aborted in the map_err call
+//     let python_iter =
+//         crate::bindings::transformers::transform_stream_iterator(&task_json, &args.0, inputs)
+//             .map_err(|e| error!("{e}"))
+//             .unwrap();
+//     SetOfIterator::new(python_iter)
+// }
+//
+// #[cfg(feature = "python")]
+// #[pg_extern(immutable, parallel_safe, name = "generate")]
+// fn generate(project_name: &str, inputs: &str, config: default!(JsonB, "'{}'")) -> String {
+//     generate_batch(project_name, Vec::from([inputs]), config)
+//         .first()
+//         .unwrap()
+//         .to_string()
+// }
+//
+// #[cfg(feature = "python")]
+// #[pg_extern(immutable, parallel_safe, name = "generate")]
+// fn generate_batch(
+//     project_name: &str,
+//     inputs: Vec<&str>,
+//     config: default!(JsonB, "'{}'"),
+// ) -> Vec<String> {
+//     match crate::bindings::transformers::generate(
+//         Project::get_deployed_model_id(project_name),
+//         inputs,
+//         config,
+//     ) {
+//         Ok(output) => output,
+//         Err(e) => error!("{e}"),
+//     }
+// }
+//
+// #[cfg(feature = "python")]
+// #[allow(clippy::too_many_arguments)]
+// #[pg_extern(parallel_safe)]
+// fn tune(
+//     project_name: &str,
+//     task: default!(Option<&str>, "NULL"),
+//     relation_name: default!(Option<&str>, "NULL"),
+//     _y_column_name: default!(Option<&str>, "NULL"),
+//     model_name: default!(Option<&str>, "NULL"),
+//     hyperparams: default!(JsonB, "'{}'"),
+//     test_size: default!(f32, 0.25),
+//     test_sampling: default!(Sampling, "'stratified'"),
+//     automatic_deploy: default!(Option<bool>, true),
+//     materialize_snapshot: default!(bool, false),
+// ) -> TableIterator<
+//     'static,
+//     (
+//         name!(status, String),
+//         name!(task, String),
+//         name!(algorithm, String),
+//         name!(deployed, bool),
+//     ),
+// > {
+//     let task = task.map(|t| Task::from_str(t).unwrap());
+//     let preprocess = JsonB(serde_json::from_str("{}").unwrap());
+//     let project = match Project::find_by_name(project_name) {
+//         Some(project) => project,
+//         None => Project::create(
+//             project_name,
+//             match task {
+//                 Some(task) => task,
+//                 None => error!(
+//                     "Project `{}` does not exist. To create a new project, provide the task.",
+//                     project_name
+//                 ),
+//             },
+//         ),
+//     };
+//
+//     if task.is_some() && task.unwrap() != project.task {
+//         error!(
+//             "Project `{:?}` already exists with a different task: `{:?}`. Create a new project instead.",
+//             project.name, project.task
+//         );
+//     }
+//
+//     let mut snapshot = match relation_name {
+//         None => {
+//             let snapshot = project.last_snapshot().expect(
+//                 "You must pass a `relation_name` and `y_column_name` to snapshot the first time you train a model.",
+//             );
+//
+//             info!("Using existing snapshot from {}", snapshot.snapshot_name(),);
+//
+//             snapshot
+//         }
+//
+//         Some(relation_name) => {
+//             info!(
+//                 "Snapshotting table \"{}\", this may take a little while...",
+//                 relation_name
+//             );
+//
+//             let snapshot = Snapshot::create(
+//                 relation_name,
+//                 None,
+//                 test_size,
+//                 test_sampling,
+//                 materialize_snapshot,
+//                 preprocess,
+//             );
+//
+//             if materialize_snapshot {
+//                 info!(
+//                     "Snapshot of table \"{}\" created and saved in {}",
+//                     relation_name,
+//                     snapshot.snapshot_name(),
+//                 );
+//             }
+//
+//             snapshot
+//         }
+//     };
+//
+//     // algorithm will be transformers, stash the model_name in a hyperparam for v1 compatibility.
+//     let mut hyperparams = hyperparams.0.as_object().unwrap().clone();
+//     hyperparams.insert(String::from("model_name"), json!(model_name));
+//     hyperparams.insert(String::from("project_name"), json!(project_name));
+//     let hyperparams = JsonB(json!(hyperparams));
+//
+//     // # Default repeatable random state when possible
+//     // let algorithm = Model.algorithm_from_name_and_task(algorithm, task);
+//     // if "random_state" in algorithm().get_params() and "random_state" not in hyperparams:
+//     //     hyperparams["random_state"] = 0
+//     let model = Model::finetune(&project, &mut snapshot, &hyperparams);
+//     let new_metrics: &serde_json::Value = &model.metrics.unwrap().0;
+//     let new_metrics = new_metrics.as_object().unwrap();
+//
+//     let deployed_metrics = Spi::get_one_with_args::<JsonB>(
+//         "
+//         SELECT models.metrics
+//         FROM pgml.models
+//         JOIN pgml.deployments
+//             ON deployments.model_id = models.id
+//         JOIN pgml.projects
+//             ON projects.id = deployments.project_id
+//         WHERE projects.name = $1
+//         ORDER by deployments.created_at DESC
+//         LIMIT 1;",
+//         vec![(PgBuiltInOids::TEXTOID.oid(), project_name.into_datum())],
+//     );
+//
+//     let mut deploy = true;
+//     match automatic_deploy {
+//         // Deploy only if metrics are better than previous model.
+//         Some(true) | None => {
+//             if let Ok(Some(deployed_metrics)) = deployed_metrics {
+//                 let deployed_metrics = deployed_metrics.0.as_object().unwrap();
+//
+//                 let deployed_value = deployed_metrics
+//                     .get(&project.task.default_target_metric())
+//                     .and_then(|value| value.as_f64())
+//                     .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
+//
+//                 // Get the value for the default target metric from new_metrics or provide a default value
+//                 let new_value = new_metrics
+//                     .get(&project.task.default_target_metric())
+//                     .and_then(|value| value.as_f64())
+//                     .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
+//
+//                 if project.task.value_is_better(deployed_value, new_value) {
+//                     deploy = false;
+//                 }
+//             }
+//         }
+//
+//         Some(false) => deploy = false,
+//     };
+//
+//     if deploy {
+//         project.deploy(model.id, Strategy::new_score);
+//     }
+//
+//     TableIterator::new(vec![(
+//         project.name,
+//         project.task.to_string(),
+//         model.algorithm.to_string(),
+//         deploy,
+//     )])
+// }
+//
+// #[cfg(feature = "python")]
+// #[pg_extern(name = "sklearn_f1_score")]
+// pub fn sklearn_f1_score(ground_truth: Vec<f32>, y_hat: Vec<f32>) -> f32 {
+//     unwrap_or_error!(crate::bindings::sklearn::f1(&ground_truth, &y_hat))
+// }
+//
+// #[cfg(feature = "python")]
+// #[pg_extern(name = "sklearn_r2_score")]
+// pub fn sklearn_r2_score(ground_truth: Vec<f32>, y_hat: Vec<f32>) -> f32 {
+//     unwrap_or_error!(crate::bindings::sklearn::r2(&ground_truth, &y_hat))
+// }
+//
+// #[cfg(feature = "python")]
+// #[pg_extern(name = "sklearn_regression_metrics")]
+// pub fn sklearn_regression_metrics(ground_truth: Vec<f32>, y_hat: Vec<f32>) -> JsonB {
+//     let metrics = unwrap_or_error!(crate::bindings::sklearn::regression_metrics(
+//         &ground_truth,
+//         &y_hat,
+//     ));
+//     JsonB(json!(metrics))
+// }
+//
+// #[cfg(feature = "python")]
+// #[pg_extern(name = "sklearn_classification_metrics")]
+// pub fn sklearn_classification_metrics(
+//     ground_truth: Vec<f32>,
+//     y_hat: Vec<f32>,
+//     num_classes: i64,
+// ) -> JsonB {
+//     let metrics = unwrap_or_error!(crate::bindings::sklearn::classification_metrics(
+//         &ground_truth,
+//         &y_hat,
+//         num_classes as _
+//     ));
+//
+//     JsonB(json!(metrics))
+// }
+//
+// #[pg_extern]
+// pub fn dump_all(path: &str) {
+//     let p = std::path::Path::new(path).join("projects.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.projects TO '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("snapshots.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.snapshots TO '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("models.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.models TO '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("files.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.files TO '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("deployments.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.deployments TO '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+// }
+//
+// pub fn load_all(path: &str) {
+//     let p = std::path::Path::new(path).join("projects.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.projects FROM '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("snapshots.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.snapshots FROM '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("models.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.models FROM '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("files.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.files FROM '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+//
+//     let p = std::path::Path::new(path).join("deployments.csv");
+//     Spi::run(&format!(
+//         "COPY pgml.deployments FROM '{}' CSV HEADER",
+//         p.to_str().unwrap()
+//     ))
+//     .unwrap();
+// }
+//
 // #[cfg(any(test, feature = "pg_test"))]
 // #[pg_schema]
 // mod tests {
