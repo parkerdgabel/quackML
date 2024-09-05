@@ -11,7 +11,7 @@ use duckdb::{
     Rows,
 };
 use log::*;
-use ndarray::Zip;
+use ndarray::{AssignElem, Zip};
 
 #[cfg(feature = "python")]
 use serde_json::json;
@@ -121,41 +121,42 @@ pub struct TrainBindData {
 
 impl Free for TrainBindData {
     fn free(&mut self) {
-        unsafe {
-            if !self.project_name.is_null() {
-                drop(CString::from_raw(self.project_name));
-            }
-            if !self.task.is_null() {
-                drop(CString::from_raw(self.task));
-            }
-            if !self.relation_name.is_null() {
-                drop(CString::from_raw(self.relation_name));
-            }
-            if !self.y_column_name.is_null() {
-                drop(CString::from_raw(self.y_column_name));
-            }
-            if !self.algorithm.is_null() {
-                drop(CString::from_raw(self.algorithm));
-            }
-            if !self.hyperparams.is_null() {
-                drop(CString::from_raw(self.hyperparams));
-            }
-            if !self.search.is_null() {
-                drop(CString::from_raw(self.search));
-            }
-            if !self.search_params.is_null() {
-                drop(CString::from_raw(self.search_params));
-            }
-            if !self.search_args.is_null() {
-                drop(CString::from_raw(self.search_args));
-            }
-            if !self.test_sampling.is_null() {
-                drop(CString::from_raw(self.test_sampling));
-            }
-            if !self.preprocess.is_null() {
-                drop(CString::from_raw(self.preprocess));
-            }
-        }
+        // unsafe {
+        //     if !self.project_name.is_null() {
+        //         CString::from_raw(self.project_name);
+        //         self.project_name = std::ptr::null_mut();
+        //     }
+        //     if !self.task.is_null() {
+        //         drop(CString::from_raw(self.task));
+        //     }
+        //     if !self.relation_name.is_null() {
+        //         drop(CString::from_raw(self.relation_name));
+        //     }
+        //     if !self.y_column_name.is_null() {
+        //         drop(CString::from_raw(self.y_column_name));
+        //     }
+        //     if !self.algorithm.is_null() {
+        //         drop(CString::from_raw(self.algorithm));
+        //     }
+        //     if !self.hyperparams.is_null() {
+        //         drop(CString::from_raw(self.hyperparams));
+        //     }
+        //     if !self.search.is_null() {
+        //         drop(CString::from_raw(self.search));
+        //     }
+        //     if !self.search_params.is_null() {
+        //         drop(CString::from_raw(self.search_params));
+        //     }
+        //     if !self.search_args.is_null() {
+        //         drop(CString::from_raw(self.search_args));
+        //     }
+        //     if !self.test_sampling.is_null() {
+        //         drop(CString::from_raw(self.test_sampling));
+        //     }
+        //     if !self.preprocess.is_null() {
+        //         drop(CString::from_raw(self.preprocess));
+        //     }
+        // }
     }
 }
 
@@ -167,7 +168,6 @@ pub struct TrainInitData {
 impl Free for TrainInitData {
     fn free(&mut self) {}
 }
-
 pub struct TrainVTab;
 
 impl VTab for TrainVTab {
@@ -181,7 +181,6 @@ impl VTab for TrainVTab {
         bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        bind.add_result_column("deploy", LogicalTypeHandle::from(LogicalTypeId::Boolean));
 
         let project_name = bind.get_parameter(0).to_string();
         let task = bind
@@ -266,7 +265,6 @@ impl VTab for TrainVTab {
                 let search = CString::from_raw((*bind_info).search);
                 let search_params = CString::from_raw((*bind_info).search_params);
                 let search_args = CString::from_raw((*bind_info).search_args);
-                let test_size = (*bind_info).test_size;
                 let test_sampling = CString::from_raw((*bind_info).test_sampling);
                 let preprocess = CString::from_raw((*bind_info).preprocess);
 
@@ -344,12 +342,14 @@ impl VTab for TrainVTab {
                 let proj_column = output.flat_vector(0);
                 let task_column = output.flat_vector(1);
                 let algorithm_column = output.flat_vector(2);
-                let deploy_column = output.flat_vector(3);
-                proj_column.insert(0, result.project_name.as_str());
-                task_column.insert(0, result.task.as_str());
-                algorithm_column.insert(0, result.algorithm.as_str());
-                deploy_column.insert(0, result.deploy.to_string().as_str());
-                output.set_len(4);
+                let project_name_raw = CString::new(result.project_name).unwrap();
+                let task_raw = CString::new(result.task).unwrap();
+                let algorithm_raw = CString::new(result.algorithm).unwrap();
+
+                proj_column.insert(0, project_name_raw);
+                task_column.insert(0, task_raw);
+                algorithm_column.insert(0, algorithm_raw);
+                output.set_len(1);
             }
         }
         Ok(())
@@ -436,7 +436,7 @@ fn train(
     let task = task.unwrap_or("NULL");
     let relation_name = relation_name.unwrap_or("NULL");
     let y_column_name = y_column_name.map(|y_column_name| y_column_name.to_string());
-    let algorithm = algorithm.unwrap_or(Algorithm::linear);
+    let algorithm = algorithm.unwrap_or(Algorithm::xgboost);
     let hyperparams = hyperparams.unwrap_or_else(|| serde_json::Map::new());
     let search_params = search_params
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
@@ -568,13 +568,13 @@ fn train_joint(
         algorithm,
         hyperparams,
         search,
-        search_params.into(),
-        search_args.into(),
-    );
+        serde_json::from_str(&search_params).unwrap(),
+        serde_json::from_str(&search_args).unwrap(),
+    )
+    .unwrap();
 
-    println!("Training model...");
-    let new_metrics: &serde_json::Value =
-        &model.as_ref().ok().and_then(|m| m.metrics.clone()).unwrap();
+    let new_metrics: &serde_json::Value = &model.metrics.expect("Failed to get model metrics");
+
     let new_metrics = new_metrics.as_object().unwrap();
 
     let deployed_metrics = context::run(|conn| {
@@ -655,7 +655,7 @@ fn train_joint(
     };
 
     if deploy {
-        project.deploy(model.as_ref().unwrap().id, Strategy::new_score);
+        project.deploy(model.id, Strategy::new_score);
     } else {
         info!("Not deploying newly trained model.");
     }
@@ -663,7 +663,7 @@ fn train_joint(
     TrainResult {
         project_name: project.name,
         task: project.task.to_string(),
-        algorithm: model.unwrap().algorithm.to_string(),
+        algorithm: model.algorithm.to_string(),
         deploy,
     }
 }

@@ -36,6 +36,7 @@ pub(crate) struct Category {
 
 // Statistics are computed for every column over the training data when the
 // data is read.
+// TODO: This deserialize_as is wrong. Need to write a function to deserialize into NAN
 #[serde_as]
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub(crate) struct Statistics {
@@ -1173,7 +1174,10 @@ impl Snapshot {
     pub fn numeric_encoded_dataset(&mut self) -> Dataset {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let mut stmt = conn.prepare(&self.select_sql()).unwrap();
-        let num_rows = stmt.row_count();
+        let num_rows = stmt.query_and_then([], |row| -> Result<_, _> {
+            let val= row.get::<_, duckdb::types::Value>(0);
+            val
+        }).unwrap().count();
         let (num_train_rows, num_test_rows) = self.train_test_split(num_rows);
         let num_features = self.num_features();
         let num_labels = self.num_labels();
@@ -1205,16 +1209,19 @@ impl Snapshot {
                     // Categorical encoding types
                     Some(categories) => {
                         let key = match column.duckdb_type.as_str() {
-                            "bool" => row.get::<_, bool>(column.position).map(|v| v.to_string()),
-                            "int2" => row.get::<_, i16>(column.position).map(|v| v.to_string()),
-                            "int4" => row.get::<_, i32>(column.position).map(|v| v.to_string()),
-                            "int8" => row.get::<_, i64>(column.position).map(|v| v.to_string()),
-                            "float4" => row.get::<_, f32>(column.position).map(|v| v.to_string()),
-                            "float8" => row.get::<_, f64>(column.position).map(|v| v.to_string()),
-
-                            "bpchar" | "text" | "varchar" => {
+                            "BOOLEAN" => row.get::<_, bool>(column.position).map(|v| v.to_string()),
+                            "SMALLINT" => row.get::<_, i16>(column.position).map(|v| v.to_string()),
+                            "INTEGER" => row.get::<_, i32>(column.position).map(|v| v.to_string()),
+                            "BIGINT" => row.get::<_, i64>(column.position).map(|v| v.to_string()),
+                            "REAL" => row.get::<_, f32>(column.position).map(|v| v.to_string()),
+                            "DOUBLE" => row.get::<_, f64>(column.position).map(|v| v.to_string()),
+                            "VARCHAR" | "CHAR" => {
                                 row.get::<_, String>(column.position).map(|v| v.to_string())
                             }
+                            _ => panic!(
+                                "Unhandled type for categorical variable: {} {:?}",
+                                column.name, column.duckdb_type
+                            ),
                             _ => panic!(
                                 "Unhandled type for categorical variable: {} {:?}",
                                 column.name, column.duckdb_type
@@ -1253,7 +1260,7 @@ impl Snapshot {
                         if column.array {
                             match column.duckdb_type.as_str() {
                                 // TODO handle NULL in arrays
-                                "bool[]" => {
+                                "BOOLEAN[]" => {
                                     let vec = row.get::<_, Vec<_>>(column.position).unwrap();
 
                                     check_column_size(column, vec.len());
@@ -1261,7 +1268,7 @@ impl Snapshot {
                                         vector.push(j as u8 as f32)
                                     }
                                 }
-                                "int2[]" => {
+                                "SMALLINT[]" => {
                                     let vec = row.get::<_, Vec<_>>(column.position).unwrap();
 
                                     check_column_size(column, vec.len());
@@ -1270,7 +1277,7 @@ impl Snapshot {
                                         vector.push(j as f32)
                                     }
                                 }
-                                "int4[]" => {
+                                "INTEGER[]" => {
                                     let vec = row.get::<_, Vec<_>>(column.position).unwrap();
 
                                     check_column_size(column, vec.len());
@@ -1279,7 +1286,7 @@ impl Snapshot {
                                         vector.push(j as f32)
                                     }
                                 }
-                                "int8[]" => {
+                                "BIGINT[]" => {
                                     let vec = row.get::<_, Vec<_>>(column.position).unwrap();
 
                                     check_column_size(column, vec.len());
@@ -1288,7 +1295,7 @@ impl Snapshot {
                                         vector.push(j as f32)
                                     }
                                 }
-                                "float4[]" => {
+                                "REAL[]" => {
                                     let vec = row.get::<_, Vec<_>>(column.position).unwrap();
 
                                     check_column_size(column, vec.len());
@@ -1297,7 +1304,7 @@ impl Snapshot {
                                         vector.push(j.into())
                                     }
                                 }
-                                "float8[]" => {
+                                "DOUBLE[]" => {
                                     let vec = row.get::<_, Vec<_>>(column.position).unwrap();
 
                                     check_column_size(column, vec.len());
@@ -1314,18 +1321,13 @@ impl Snapshot {
                         } else {
                             // scalar
                             let float = match column.duckdb_type.as_str() {
-                                "bool" => row.get(column.position).unwrap(),
-
-                                "int2" => row.get(column.position).unwrap(),
-
-                                "int4" => row.get(column.position).unwrap(),
-
-                                "int8" => row.get(column.position).unwrap(),
-
-                                "float4" => row.get(column.position).unwrap(),
-                                "float8" => row.get(column.position).unwrap(),
-
-                                "numeric" => row.get(column.position).unwrap(),
+                                "BOOLEAN" => row.get(column.position).unwrap(),
+                                "SMALLINT" => row.get(column.position).unwrap(),
+                                "INTEGER" => row.get(column.position).unwrap(),
+                                "BIGINT" => row.get(column.position).unwrap(),
+                                "REAL" => row.get(column.position).unwrap(),
+                                "DOUBLE" => row.get(column.position).unwrap(),
+                                "DECIMAL" => row.get(column.position).unwrap(),
 
                                 _ => panic!(
                                     "Unhandled type for quantitative scalar column: {} {:?}",

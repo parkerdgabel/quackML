@@ -86,7 +86,7 @@ impl Project {
         println!("Deploying model id: {:?}", model_id);
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let _deployment_id = conn.execute(
-            "INSERT INTO quackml.deployments (project_id, model_id, strategy) VALUES ($1, $2, $3::quackml.strategy)",
+            "INSERT INTO quackml.deployments (project_id, model_id, strategy) VALUES ($1, $2, $3::strategy)",
             params![&self.id, &model_id, &strategy.to_string()],
         ).unwrap();
 
@@ -96,7 +96,10 @@ impl Project {
             eprintln!("Active projects has exceeded capacity map, clearing caches.");
             projects.clear();
         }
-        projects.insert(self.id, model_id).unwrap();
+        match projects.insert(self.id, model_id) {
+            Some(_) => println!("Updated project with id {}", self.id),
+            None => println!("Inserted new project with id {}", model_id),
+        }
     }
 
     pub fn find(id: i64) -> Option<Project> {

@@ -99,10 +99,10 @@ impl Model {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let result = conn
         .query_row("
-          INSERT INTO quackmlml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
-          VALUES ($1, $2, cast($3 AS quackml.algorithm), $4, cast($5 as status), $6, $7, $8, $9)
+          INSERT INTO quackml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
+          VALUES ($1, $2, $3, $4, cast($5 as status), $6, $7, $8, $9)
           RETURNING id, project_id, snapshot_id, algorithm, hyperparams, status, metrics, search, search_params, search_args, created_at, updated_at;",
-          params![project.id, snapshot.id, algorithm.to_string(), serde_json::to_string(&hyperparams).unwrap(), status.to_string(), search.map(|s| s.to_string()).map(|s| s).unwrap_or_default(), serde_json::to_string(&search_args).unwrap(), dataset.num_features as i64], |row| {
+          params![project.id, snapshot.id, algorithm.to_string(), serde_json::to_string(&hyperparams).unwrap(), status.to_string(), search.map_or("grid".to_string(),|s| s.to_string()), serde_json::to_string(&search_params).unwrap(), serde_json::to_string(&search_args).unwrap(), dataset.num_features as i64], |row| {
             let model = Model {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -111,11 +111,11 @@ impl Model {
                 hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
                 status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
                 metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
-                search: row.get::<_, String>(8).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
-                search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                created_at: row.get(11).unwrap(),
-                updated_at: row.get(12).unwrap(),
+                search: row.get::<_, Option<String>>(7)?.inspect(|s| println!("{}", s)).map(|s| Search::from_str(&s)).transpose().unwrap(),
+                search_params: serde_json::from_str(&row.get::<_, String>(8)?).unwrap(),
+                search_args: serde_json::from_str(&row.get::<_, String>(9)?).unwrap(),
+                created_at: row.get(10).unwrap(),
+                updated_at: row.get(11).unwrap(),
                 project: project.clone(),
                 snapshot: snapshot.clone(),
                 bindings: None,
@@ -158,8 +158,8 @@ impl Model {
 
         let result = conn
         .query_row("
-          INSERT INTO quackmlml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
-          VALUES ($1, $2, cast($3 AS quackml.algorithm), $4, cast($5 as status), $6, $7, $8, $9)
+          INSERT INTO quackml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
+          VALUES ($1, $2, $3, $4, cast($5 as status), $6, $7, $8, $9)
           RETURNING id, project_id, snapshot_id, algorithm, hyperparams, status, metrics, search, search_params, search_args, created_at, updated_at;",
           params![project.id, snapshot.id, Algorithm::transformers.to_string(), serde_json::to_string(&hyperparams).unwrap(), Status::in_progress.to_string(), None as Option<String>, "{}", dataset.num_features() as i64], |row| {
             let model = Model {
@@ -612,7 +612,7 @@ impl Model {
                 // let confusion_matrix = y_hat.confusion_matrix(y_test).unwrap();
 
                 // This has to be identical to Scikit.
-                let pgml_confusion_matrix = crate::orm::metrics::ConfusionMatrix::new(
+                let quackml_confusion_matrix = crate::orm::metrics::ConfusionMatrix::new(
                     &y_test,
                     &y_hat,
                     dataset.num_distinct_labels,
@@ -621,11 +621,14 @@ impl Model {
                 // These are validated against Scikit and seem to be correct.
                 metrics.insert(
                     "f1".to_string(),
-                    pgml_confusion_matrix.f1(crate::orm::metrics::Average::Macro),
+                    quackml_confusion_matrix.f1(crate::orm::metrics::Average::Macro),
                 );
-                metrics.insert("precision".to_string(), pgml_confusion_matrix.precision());
-                metrics.insert("recall".to_string(), pgml_confusion_matrix.recall());
-                metrics.insert("accuracy".to_string(), pgml_confusion_matrix.accuracy());
+                metrics.insert(
+                    "precision".to_string(),
+                    quackml_confusion_matrix.precision(),
+                );
+                metrics.insert("recall".to_string(), quackml_confusion_matrix.recall());
+                metrics.insert("accuracy".to_string(), quackml_confusion_matrix.accuracy());
 
                 // This one is inaccurate, I have it in my TODO to reimplement.
                 // metrics.insert("mcc".to_string(), confusion_matrix.mcc());
@@ -878,7 +881,7 @@ impl Model {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
 
         conn.execute(
-            "UPDATE pgml.models SET hyperparams = $1, metrics = $2 WHERE id = $3 RETURNING id",
+            "UPDATE quackml.models SET hyperparams = $1, metrics = $2 WHERE id = $3",
             params![
                 serde_json::to_string(&self.hyperparams).unwrap(),
                 serde_json::to_string(self.metrics.as_ref().unwrap()).unwrap(),
@@ -889,7 +892,7 @@ impl Model {
 
         // Save the bindings.
         conn.execute(
-            "INSERT INTO pgml.files (model_id, path, part, data) VALUES($1, 'estimator.rmp', 0, $2) RETURNING id",
+            "INSERT INTO quackml.files (model_id, path, part, data) VALUES($1, 'estimator.rmp', 0, $2)",
             params![
                 self.id,
                 self.bindings.as_ref().unwrap().to_bytes().unwrap()
