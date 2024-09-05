@@ -114,22 +114,8 @@ impl Model {
                 search: row.get::<_, String>(8).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
                 search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                 search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                created_at: row.get::<_, duckdb::types::Value>(11).map(|v| match v {
-                    duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                        DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                        Utc,
-                    ),
-                    _ => panic!("Expected a timestamp"),
-
-                }).unwrap(),
-                updated_at: row.get::<_, duckdb::types::Value>(12).map(|v| match v {
-                    duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                        DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                        Utc,
-                    ),
-                    _ => panic!("Expected a timestamp"),
-
-                }).unwrap(),
+                created_at: row.get(11).unwrap(),
+                updated_at: row.get(12).unwrap(),
                 project: project.clone(),
                 snapshot: snapshot.clone(),
                 bindings: None,
