@@ -18,10 +18,10 @@ dap.configurations.rust = {
 		program = function()
 			return vim.fn.getcwd() .. "/duckdb-rs/duckdb/build/debug/duckdb"
 		end,
-		args = { "-unsigned", "-cmd \"set allow_extensions_metadata_mismatch=true;load 'quack_ml.duckdb_extension'\"" },
+		args = { "-unsigned" },
 		stopOnEntry = false,
-		env = {
-			LD_LIBRARY_PATH = vim.fn.getcwd(),
+		postRunCommands = {
+			"target modules add quack_ml.duckdb_extension",
 		},
 	},
 }
