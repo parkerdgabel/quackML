@@ -1,10 +1,13 @@
 use crate::context::DATABASE_CONTEXT;
+use core::panic;
+use duckdb::params;
 use flate2::read::GzDecoder;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::env::temp_dir;
 use std::fmt::{Display, Formatter};
 use std::io::{Read, Write};
+use std::path;
 
 #[derive(Debug)]
 pub struct Dataset {
@@ -192,19 +195,25 @@ lazy_static! {
 pub fn load_datasets() {
     let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
     DATASETS.iter().for_each(|(name, data)| {
-        let mut decoder = GzDecoder::new(*data);
+        let mut decoder = GzDecoder::new(&data[..]);
         let mut csv = String::new();
         decoder.read_to_string(&mut csv).unwrap();
+        println!("Read {} bytes from {}", csv.len(), name);
         let tmp_dir = temp_dir();
-        let file_path = tmp_dir.join(name);
+        let file_path = tmp_dir.join(*name);
         let mut file = std::fs::File::create(&file_path).unwrap();
         file.write_all(csv.as_bytes()).unwrap();
         let table_name = name.replace(".csv", "");
         drop_table_if_exists(&table_name);
-        conn.execute_batch(&format!(
-            "CREATE TABLE quackml.{} AS FROM {}",
-            table_name, name
-        ))
+        conn.execute_batch(
+            format!(
+                "CREATE TABLE quackml.{} AS SELECT * FROM read_csv('{}')",
+                table_name,
+                file_path.to_str().unwrap()
+            )
+            .as_str(),
+        )
         .unwrap();
+        std::fs::remove_file(file_path).unwrap(); // Clean up temporary file
     });
 }

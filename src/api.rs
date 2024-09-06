@@ -1,11 +1,17 @@
-use std::default;
+use std::ffi::{c_char, c_float};
 use std::fmt::Write;
 use std::str::FromStr;
+use std::{default, ffi::CString};
 
 use anyhow::anyhow;
-use duckdb::{params, Rows};
+use duckdb::{
+    core::{Inserter, LogicalTypeHandle, LogicalTypeId},
+    params,
+    vtab::{Free, VTab},
+    Rows,
+};
 use log::*;
-use ndarray::Zip;
+use ndarray::{AssignElem, Zip};
 
 #[cfg(feature = "python")]
 use serde_json::json;
@@ -97,6 +103,333 @@ fn version() -> String {
     "0.0.0".to_string()
 }
 
+#[repr(C)]
+pub struct TrainBindData {
+    project_name: *mut c_char,
+    task: *mut c_char,
+    relation_name: *mut c_char,
+    y_column_name: *mut c_char,
+    algorithm: *mut c_char,
+    hyperparams: *mut c_char,
+    search: *mut c_char,
+    search_params: *mut c_char,
+    search_args: *mut c_char,
+    test_size: *mut c_float,
+    test_sampling: *mut c_char,
+    preprocess: *mut c_char,
+}
+
+impl Free for TrainBindData {
+    fn free(&mut self) {
+        unsafe {
+            if !self.project_name.is_null() {
+                drop(CString::from_raw(self.project_name));
+            }
+            if !self.task.is_null() {
+                drop(CString::from_raw(self.task));
+            }
+            if !self.relation_name.is_null() {
+                drop(CString::from_raw(self.relation_name));
+            }
+            if !self.y_column_name.is_null() {
+                drop(CString::from_raw(self.y_column_name));
+            }
+            if !self.algorithm.is_null() {
+                drop(CString::from_raw(self.algorithm));
+            }
+            if !self.hyperparams.is_null() {
+                drop(CString::from_raw(self.hyperparams));
+            }
+            if !self.search.is_null() {
+                drop(CString::from_raw(self.search));
+            }
+            if !self.search_params.is_null() {
+                drop(CString::from_raw(self.search_params));
+            }
+            if !self.search_args.is_null() {
+                drop(CString::from_raw(self.search_args));
+            }
+            if !self.test_sampling.is_null() {
+                drop(CString::from_raw(self.test_sampling));
+            }
+            if !self.preprocess.is_null() {
+                drop(CString::from_raw(self.preprocess));
+            }
+        }
+    }
+}
+
+#[repr(C)]
+pub struct TrainInitData {
+    done: bool,
+}
+
+impl Free for TrainInitData {
+    fn free(&mut self) {}
+}
+pub struct TrainVTab;
+
+impl VTab for TrainVTab {
+    type InitData = TrainInitData;
+    type BindData = TrainBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("deploy", LogicalTypeHandle::from(LogicalTypeId::Boolean));
+
+        let project_name = bind.get_parameter(0).to_string();
+        let task = bind
+            .get_named_parameter("task")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let relation_name = bind
+            .get_named_parameter("relation_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let y_column_name = bind
+            .get_named_parameter("y_column_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let algorithm = bind
+            .get_named_parameter("algorithm")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let hyperparams = bind
+            .get_named_parameter("hyperparams")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let search = bind
+            .get_named_parameter("search")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let search_params = bind
+            .get_named_parameter("search_params")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let search_args = bind
+            .get_named_parameter("search_args")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let test_size = bind
+            .get_named_parameter("test_size")
+            .map_or_else(|| 0.0, |v| v.to_string().parse::<f32>().unwrap_or(0.0));
+        let test_sampling = bind
+            .get_named_parameter("test_sampling")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let preprocess = bind
+            .get_named_parameter("preprocess")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+
+        unsafe {
+            (*data).project_name = CString::new(project_name).unwrap().into_raw();
+            (*data).task = CString::new(task).unwrap().into_raw();
+            (*data).relation_name = CString::new(relation_name).unwrap().into_raw();
+            (*data).y_column_name = CString::new(y_column_name).unwrap().into_raw();
+            (*data).algorithm = CString::new(algorithm).unwrap().into_raw();
+            (*data).hyperparams = CString::new(hyperparams).unwrap().into_raw();
+            (*data).search = CString::new(search).unwrap().into_raw();
+            (*data).search_params = CString::new(search_params).unwrap().into_raw();
+            (*data).search_args = CString::new(search_args).unwrap().into_raw();
+            (*data).test_size = Box::into_raw(Box::new(test_size));
+            (*data).test_sampling = CString::new(test_sampling).unwrap().into_raw();
+            (*data).preprocess = CString::new(preprocess).unwrap().into_raw();
+        }
+        Ok(())
+    }
+
+    unsafe fn init(
+        init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).done = false;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_info = func.get_init_data::<TrainInitData>();
+        let bind_info = func.get_bind_data::<TrainBindData>();
+
+        unsafe {
+            if (*init_info).done {
+                output.set_len(0)
+            } else {
+                (*init_info).done = true;
+                let project_name = CString::from_raw((*bind_info).project_name);
+                let task = CString::from_raw((*bind_info).task);
+                let relation_name = CString::from_raw((*bind_info).relation_name);
+                let y_column_name = CString::from_raw((*bind_info).y_column_name);
+                let algorithm = CString::from_raw((*bind_info).algorithm);
+                let hyperparams = CString::from_raw((*bind_info).hyperparams);
+                let search = CString::from_raw((*bind_info).search);
+                let search_params = CString::from_raw((*bind_info).search_params);
+                let search_args = CString::from_raw((*bind_info).search_args);
+                let test_sampling = CString::from_raw((*bind_info).test_sampling);
+                let preprocess = CString::from_raw((*bind_info).preprocess);
+
+                (*bind_info).project_name = CString::into_raw(project_name.clone());
+                (*bind_info).task = CString::into_raw(task.clone());
+                (*bind_info).relation_name = CString::into_raw(relation_name.clone());
+                (*bind_info).y_column_name = CString::into_raw(y_column_name.clone());
+                (*bind_info).algorithm = CString::into_raw(algorithm.clone());
+                (*bind_info).hyperparams = CString::into_raw(hyperparams.clone());
+                (*bind_info).search = CString::into_raw(search.clone());
+                (*bind_info).search_params = CString::into_raw(search_params.clone());
+                (*bind_info).search_args = CString::into_raw(search_args.clone());
+                (*bind_info).test_sampling = CString::into_raw(test_sampling.clone());
+                (*bind_info).preprocess = CString::into_raw(preprocess.clone());
+
+                let task = match task.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(s),
+                    Err(_) => panic!("Failed to unwrap task string"),
+                };
+                let relation_name = match relation_name.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(s),
+                    Err(_) => panic!("Failed to unwrap relation_name string"),
+                };
+                let y_column_name = match y_column_name.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(s),
+                    Err(_) => panic!("Failed to unwrap y_column_name string"),
+                };
+                let algorithm = match algorithm.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(Algorithm::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap algorithm string"),
+                };
+                let hyperparams = match hyperparams.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap hyperparams string"),
+                };
+                let search = match search.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(Search::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap search string"),
+                };
+                let search_params = match search_params.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap search_params string"),
+                };
+                let search_args = match search_args.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap search_args string"),
+                };
+                let test_size = match unsafe { *(*bind_info).test_size } {
+                    0.0 => None,
+                    value => Some(value),
+                };
+                let test_sampling = match test_sampling.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(Sampling::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap test_sampling string"),
+                };
+                let preprocess = match preprocess.to_str() {
+                    Ok("") => None,
+                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
+                    Err(_) => panic!("Failed to unwrap preprocess string"),
+                };
+                let result = train(
+                    project_name.to_str().unwrap(),
+                    task,
+                    relation_name,
+                    y_column_name,
+                    algorithm,
+                    hyperparams,
+                    search,
+                    search_params,
+                    search_args,
+                    test_size,
+                    test_sampling,
+                    None,
+                    None,
+                    preprocess,
+                );
+
+                let proj_column = output.flat_vector(0);
+                let task_column = output.flat_vector(1);
+                let algorithm_column = output.flat_vector(2);
+                let deploy_column: *mut bool = output.flat_vector(3).as_mut_ptr();
+                let project_name_raw = CString::new(result.project_name).unwrap();
+                let task_raw = CString::new(result.task).unwrap();
+                let algorithm_raw = CString::new(result.algorithm).unwrap();
+
+                proj_column.insert(0, project_name_raw);
+                task_column.insert(0, task_raw);
+                algorithm_column.insert(0, algorithm_raw);
+                deploy_column.write(result.deploy);
+                output.set_len(1);
+            }
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, duckdb::core::LogicalTypeHandle)>> {
+        Some(vec![
+            (
+                "task".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "relation_name".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "y_column_name".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "algorithm".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "hyperparams".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "search".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "search_params".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "search_args".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "test_size".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Float),
+            ),
+            (
+                "test_sampling".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "preprocess".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+        ])
+    }
+}
+
+struct TrainResult {
+    project_name: String,
+    task: String,
+    algorithm: String,
+    deploy: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn train(
     project_name: &str,
@@ -113,11 +446,11 @@ fn train(
     automatic_deploy: Option<bool>,
     materialize_snapshot: Option<bool>,
     preprocess: Option<Value>,
-) -> Vec<(String, String, String, bool)> {
+) -> TrainResult {
     let task = task.unwrap_or("NULL");
     let relation_name = relation_name.unwrap_or("NULL");
-    let y_column_name = y_column_name.map(|y_column_name| vec![y_column_name.to_string()]);
-    let algorithm = algorithm.unwrap_or(Algorithm::linear);
+    let y_column_name = y_column_name.map(|y_column_name| y_column_name.to_string());
+    let algorithm = algorithm.unwrap_or(Algorithm::xgboost);
     let hyperparams = hyperparams.unwrap_or_else(|| serde_json::Map::new());
     let search_params = search_params
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
@@ -128,7 +461,7 @@ fn train(
     let test_size = test_size.unwrap_or(0.25);
     let test_sampling = test_sampling.unwrap_or(Sampling::stratified);
     let materialize_snapshot = materialize_snapshot.unwrap_or(false);
-    let preprocess = preprocess.unwrap_or("'{}'".into()).to_string();
+    let preprocess = preprocess.unwrap_or("{}".into()).to_string();
 
     train_joint(
         project_name,
@@ -153,7 +486,7 @@ fn train_joint(
     project_name: &str,
     task: Option<&str>,
     relation_name: Option<&str>,
-    y_column_name: Option<Vec<String>>,
+    y_column_name: Option<String>,
     algorithm: Algorithm,
     hyperparams: &Map<String, Value>,
     search: Option<Search>,
@@ -164,7 +497,7 @@ fn train_joint(
     automatic_deploy: Option<bool>,
     materialize_snapshot: bool,
     preprocess: String,
-) -> Vec<(String, String, String, bool)> {
+) -> TrainResult {
     let task = task.map(|t| Task::from_str(t).unwrap());
     let project = match Project::find_by_name(project_name) {
         Some(project) => project,
@@ -238,6 +571,7 @@ fn train_joint(
         algorithm
     };
 
+    println!("Creating model...");
     // # Default repeatable random state when possible
     // let algorithm = Model.algorithm_from_name_and_task(algorithm, task);
     // if "random_state" in algorithm().get_params() and "random_state" not in hyperparams:
@@ -248,12 +582,13 @@ fn train_joint(
         algorithm,
         hyperparams,
         search,
-        search_params.into(),
-        search_args.into(),
-    );
+        serde_json::from_str(&search_params).unwrap(),
+        serde_json::from_str(&search_args).unwrap(),
+    )
+    .unwrap();
 
-    let new_metrics: &serde_json::Value =
-        &model.as_ref().ok().and_then(|m| m.metrics.clone()).unwrap();
+    let new_metrics: &serde_json::Value = &model.metrics.expect("Failed to get model metrics");
+
     let new_metrics = new_metrics.as_object().unwrap();
 
     let deployed_metrics = context::run(|conn| {
@@ -277,6 +612,7 @@ fn train_joint(
 
     let mut deploy = true;
 
+    println!("Automatic deploy: {:?}", automatic_deploy);
     match automatic_deploy {
         // Deploy only if metrics are better than previous model, or if its the first model
         Some(true) | None => {
@@ -333,17 +669,17 @@ fn train_joint(
     };
 
     if deploy {
-        project.deploy(model.as_ref().unwrap().id, Strategy::new_score);
+        project.deploy(model.id, Strategy::new_score);
     } else {
         info!("Not deploying newly trained model.");
     }
 
-    vec![(
-        project.name,
-        project.task.to_string(),
-        model.unwrap().algorithm.to_string(),
+    TrainResult {
+        project_name: project.name,
+        task: project.task.to_string(),
+        algorithm: model.algorithm.to_string(),
         deploy,
-    )]
+    }
 }
 
 fn deploy_model(model_id: i64) -> Vec<(String, String, String)> {
@@ -553,7 +889,7 @@ fn snapshot(
 
     Snapshot::create(
         relation_name,
-        Some(vec![y_column_name.to_string()]),
+        Some(y_column_name.to_string()),
         test_size,
         test_sampling,
         true,

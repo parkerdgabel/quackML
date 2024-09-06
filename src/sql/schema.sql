@@ -35,6 +35,14 @@ CREATE TYPE strategy AS ENUM (
     'specific'
 );
 
+CREATE TYPE STATUS AS ENUM (
+		'pending',
+'in_progress',
+		'running',
+		'completed',
+		'failed'
+);
+
 -- Projects Table to organize work
 CREATE SEQUENCE IF NOT EXISTS quackml.projects_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.projects (
@@ -54,7 +62,7 @@ CREATE SEQUENCE IF NOT EXISTS quackml.snapshots_id_seq START 1;
 CREATE TABLE IF NOT EXISTS quackml.snapshots(
 	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.snapshots_id_seq'),
 	relation_name TEXT NOT NULL,
-	y_column_name TEXT[],
+	y_column_name TEXT,
 	test_size FLOAT4 NOT NULL,
 	test_sampling sampling NOT NULL,
 	status TEXT NOT NULL,
