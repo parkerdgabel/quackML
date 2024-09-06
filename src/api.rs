@@ -121,42 +121,41 @@ pub struct TrainBindData {
 
 impl Free for TrainBindData {
     fn free(&mut self) {
-        // unsafe {
-        //     if !self.project_name.is_null() {
-        //         CString::from_raw(self.project_name);
-        //         self.project_name = std::ptr::null_mut();
-        //     }
-        //     if !self.task.is_null() {
-        //         drop(CString::from_raw(self.task));
-        //     }
-        //     if !self.relation_name.is_null() {
-        //         drop(CString::from_raw(self.relation_name));
-        //     }
-        //     if !self.y_column_name.is_null() {
-        //         drop(CString::from_raw(self.y_column_name));
-        //     }
-        //     if !self.algorithm.is_null() {
-        //         drop(CString::from_raw(self.algorithm));
-        //     }
-        //     if !self.hyperparams.is_null() {
-        //         drop(CString::from_raw(self.hyperparams));
-        //     }
-        //     if !self.search.is_null() {
-        //         drop(CString::from_raw(self.search));
-        //     }
-        //     if !self.search_params.is_null() {
-        //         drop(CString::from_raw(self.search_params));
-        //     }
-        //     if !self.search_args.is_null() {
-        //         drop(CString::from_raw(self.search_args));
-        //     }
-        //     if !self.test_sampling.is_null() {
-        //         drop(CString::from_raw(self.test_sampling));
-        //     }
-        //     if !self.preprocess.is_null() {
-        //         drop(CString::from_raw(self.preprocess));
-        //     }
-        // }
+        unsafe {
+            if !self.project_name.is_null() {
+                drop(CString::from_raw(self.project_name));
+            }
+            if !self.task.is_null() {
+                drop(CString::from_raw(self.task));
+            }
+            if !self.relation_name.is_null() {
+                drop(CString::from_raw(self.relation_name));
+            }
+            if !self.y_column_name.is_null() {
+                drop(CString::from_raw(self.y_column_name));
+            }
+            if !self.algorithm.is_null() {
+                drop(CString::from_raw(self.algorithm));
+            }
+            if !self.hyperparams.is_null() {
+                drop(CString::from_raw(self.hyperparams));
+            }
+            if !self.search.is_null() {
+                drop(CString::from_raw(self.search));
+            }
+            if !self.search_params.is_null() {
+                drop(CString::from_raw(self.search_params));
+            }
+            if !self.search_args.is_null() {
+                drop(CString::from_raw(self.search_args));
+            }
+            if !self.test_sampling.is_null() {
+                drop(CString::from_raw(self.test_sampling));
+            }
+            if !self.preprocess.is_null() {
+                drop(CString::from_raw(self.preprocess));
+            }
+        }
     }
 }
 
@@ -268,6 +267,18 @@ impl VTab for TrainVTab {
                 let search_args = CString::from_raw((*bind_info).search_args);
                 let test_sampling = CString::from_raw((*bind_info).test_sampling);
                 let preprocess = CString::from_raw((*bind_info).preprocess);
+
+                (*bind_info).project_name = CString::into_raw(project_name.clone());
+                (*bind_info).task = CString::into_raw(task.clone());
+                (*bind_info).relation_name = CString::into_raw(relation_name.clone());
+                (*bind_info).y_column_name = CString::into_raw(y_column_name.clone());
+                (*bind_info).algorithm = CString::into_raw(algorithm.clone());
+                (*bind_info).hyperparams = CString::into_raw(hyperparams.clone());
+                (*bind_info).search = CString::into_raw(search.clone());
+                (*bind_info).search_params = CString::into_raw(search_params.clone());
+                (*bind_info).search_args = CString::into_raw(search_args.clone());
+                (*bind_info).test_sampling = CString::into_raw(test_sampling.clone());
+                (*bind_info).preprocess = CString::into_raw(preprocess.clone());
 
                 let task = match task.to_str() {
                     Ok("") => None,
