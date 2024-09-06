@@ -181,6 +181,7 @@ impl VTab for TrainVTab {
         bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("deploy", LogicalTypeHandle::from(LogicalTypeId::Boolean));
 
         let project_name = bind.get_parameter(0).to_string();
         let task = bind
@@ -342,6 +343,7 @@ impl VTab for TrainVTab {
                 let proj_column = output.flat_vector(0);
                 let task_column = output.flat_vector(1);
                 let algorithm_column = output.flat_vector(2);
+                let deploy_column: *mut bool = output.flat_vector(3).as_mut_ptr();
                 let project_name_raw = CString::new(result.project_name).unwrap();
                 let task_raw = CString::new(result.task).unwrap();
                 let algorithm_raw = CString::new(result.algorithm).unwrap();
@@ -349,6 +351,7 @@ impl VTab for TrainVTab {
                 proj_column.insert(0, project_name_raw);
                 task_column.insert(0, task_raw);
                 algorithm_column.insert(0, algorithm_raw);
+                deploy_column.write(result.deploy);
                 output.set_len(1);
             }
         }
