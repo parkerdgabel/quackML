@@ -1,15 +1,18 @@
+use core::f32;
 use std::ffi::{c_char, c_float};
 use std::fmt::Write;
 use std::str::FromStr;
 use std::{default, ffi::CString};
 
 use anyhow::anyhow;
+use duckdb::vtab::VScalar;
 use duckdb::{
     core::{Inserter, LogicalTypeHandle, LogicalTypeId},
     params,
     vtab::{Free, VTab},
     Rows,
 };
+use libduckdb_sys::duckdb_string_t;
 use log::*;
 use ndarray::{AssignElem, Zip};
 
@@ -786,6 +789,39 @@ fn deploy_strategy(
     project.deploy(model_id, strategy);
 
     vec![(project_name.to_string(), strategy.to_string(), algorithm)]
+}
+
+pub struct PredictScalar {}
+
+impl VScalar for PredictScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let binding = input.flat_vector(0);
+        let binding: &[duckdb_string_t] = binding.as_slice::<duckdb_string_t>();
+        let project_name = String::from(&binding[0]);
+        let binding = input.list_vector(1);
+        let binding = binding.child();
+        let features = binding.as_slice::<f32>();
+        let features = features.to_vec();
+        let result = predict_f32(&project_name, features);
+        let output = output.as_mut_ptr::<f32>();
+        output.write(result);
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Double)),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Float)
+    }
 }
 
 fn predict_f32(project_name: &str, features: Vec<f32>) -> f32 {

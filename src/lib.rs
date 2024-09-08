@@ -29,6 +29,8 @@ pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     run_schema_query()?;
     load_datasets();
     conn.register_table_function::<api::TrainVTab>("train")?;
+    conn.register_scalar_function::<api::PredictScalar>("predict")
+        .expect("could not register scalar function");
     Ok(())
 }
 
