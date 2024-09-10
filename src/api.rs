@@ -1,4 +1,4 @@
-use core::f32;
+use core::{f32, f64};
 use std::ffi::{c_char, c_float};
 use std::fmt::Write;
 use std::str::FromStr;
@@ -12,7 +12,7 @@ use duckdb::{
     vtab::{Free, VTab},
     Rows,
 };
-use libduckdb_sys::duckdb_string_t;
+use libduckdb_sys::{duckdb_string_t, DuckDbString};
 use log::*;
 use ndarray::{AssignElem, Zip};
 
@@ -452,8 +452,8 @@ fn train(
 ) -> TrainResult {
     let task = task.unwrap_or("NULL");
     let relation_name = relation_name.unwrap_or("NULL");
-    let y_column_name = y_column_name.map(|y_column_name| y_column_name.to_string());
-    let algorithm = algorithm.unwrap_or(Algorithm::xgboost);
+    let y_column_name = y_column_name.map(|y_column_name| vec![y_column_name.to_string()]);
+    let algorithm = algorithm.unwrap_or(Algorithm::linear);
     let hyperparams = hyperparams.unwrap_or_else(|| serde_json::Map::new());
     let search_params = search_params
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
@@ -489,7 +489,7 @@ fn train_joint(
     project_name: &str,
     task: Option<&str>,
     relation_name: Option<&str>,
-    y_column_name: Option<String>,
+    y_column_name: Option<Vec<String>>,
     algorithm: Algorithm,
     hyperparams: &Map<String, Value>,
     search: Option<Search>,
@@ -803,19 +803,17 @@ impl VScalar for PredictScalar {
         let binding: &[duckdb_string_t] = binding.as_slice::<duckdb_string_t>();
         let project_name = String::from(&binding[0]);
         let binding = input.list_vector(1);
-        let binding = binding.child();
-        let features = binding.as_slice::<f32>();
-        let features = features.to_vec();
-        let result = predict_f32(&project_name, features);
-        let output = output.as_mut_ptr::<f32>();
-        output.write(result);
+        let features = binding.to_vec::<f32>();
+        let result = predict_f32(project_name.as_str(), features);
+        let output = output.as_mut_slice::<f32>();
+        output[0] = result;
         Ok(())
     }
 
     fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
         Some(vec![
             LogicalTypeHandle::from(LogicalTypeId::Varchar),
-            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Double)),
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Float)),
         ])
     }
 
@@ -912,27 +910,27 @@ fn predict_model_row(model_id: i64, row: &mut Rows) -> f32 {
     unwrap_or_error!(model.predict(&processed))
 }
 
-fn snapshot(
-    relation_name: &str,
-    y_column_name: &str,
-    test_size: Option<f32>,
-    test_sampling: Option<Sampling>,
-    preprocess: Option<serde_json::Value>,
-) -> Vec<(String, String)> {
-    let test_size = test_size.unwrap_or(0.25);
-    let test_sampling = test_sampling.unwrap_or(Sampling::stratified);
-    let preprocess = preprocess.unwrap_or(serde_json::json!({}));
-
-    Snapshot::create(
-        relation_name,
-        Some(y_column_name.to_string()),
-        test_size,
-        test_sampling,
-        true,
-        &preprocess.to_string(),
-    );
-    vec![(relation_name.to_string(), y_column_name.to_string())]
-}
+// fn snapshot(
+//     relation_name: &str,
+//     y_column_name: &str,
+//     test_size: Option<f32>,
+//     test_sampling: Option<Sampling>,
+//     preprocess: Option<serde_json::Value>,
+// ) -> Vec<(String, String)> {
+//     let test_size = test_size.unwrap_or(0.25);
+//     let test_sampling = test_sampling.unwrap_or(Sampling::stratified);
+//     let preprocess = preprocess.unwrap_or(serde_json::json!({}));
+//
+//     Snapshot::create(
+//         relation_name,
+//         Some(y_column_name[0].to_string()),
+//         test_size,
+//         test_sampling,
+//         true,
+//         &preprocess.to_string(),
+//     );
+//     vec![(relation_name.to_string(), y_column_name.to_string())]
+// }
 
 // fn load_dataset(
 //     source: &str,

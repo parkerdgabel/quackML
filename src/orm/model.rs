@@ -296,7 +296,7 @@ impl Model {
                     "SELECT m.id, m.project_id, m.snapshot_id, m.algorithm, m.hyperparams, m.status, m.metrics, m.search, m.search_params, m.search_args, m.created_at, m.updated_at, f.data
                         FROM quackml.models m
                         JOIN quackml.files f ON m.id = f.model_id
-                        WHERE id = $1;",
+                        WHERE m.id = $1;",
                     params![id],
                     |row| {
                         let project_id = row.get::<_,i64>(1)?;
@@ -332,20 +332,8 @@ impl Model {
                             search: row.get::<_, String>(7).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
                             search_params: row.get::<_, String>(8).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                             search_args: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                            created_at: row.get::<_, duckdb::types::Value>(10).map(|v| match v {
-                                duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                                    DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                                    Utc,
-                                ),
-                                _ => panic!("Expected a timestamp"),
-                            }).unwrap(),
-                            updated_at: row.get::<_, duckdb::types::Value>(11).map(|v| match v {
-                                duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                                    DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                                    Utc,
-                                ),
-                                _ => panic!("Expected a timestamp"),
-                            }).unwrap(),
+                            created_at: row.get(10).unwrap(),
+                            updated_at: row.get(11).unwrap(),
                             project,
                             snapshot,
                             bindings: Some(bindings),
