@@ -1,0 +1,4 @@
+[submodule "duckdb-rs"]
+  path = duckdb-rs
+	url = git@github.com:parkerdgabel/duckdb-rs.git
+  branch = poc-rust-c-extension-api
