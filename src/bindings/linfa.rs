@@ -92,7 +92,7 @@ pub struct LogisticRegression {
     num_features: usize,
     num_distinct_labels: usize,
 }
-linealinear
+
 impl LogisticRegression {
     pub fn fit(dataset: &Dataset, hyperparams: &Hyperparams) -> Result<Box<dyn Bindings>>
     where

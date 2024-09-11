@@ -75,25 +75,6 @@ impl Model {
         search_params: serde_json::Value,
         search_args: serde_json::Value,
     ) -> Result<Model> {
-        // let mut model = Model {
-        //     id: 0,
-        //     project_id: project.id,
-        //     snapshot_id: snapshot.id,
-        //     algorithm,
-        //     hyperparams: &hyperparams.clone(),
-        //     status: Status::in_progress,
-        //     metrics: None,
-        //     search,
-        //     search_params,
-        //     search_args,
-        //     created_at: Utc::now(),
-        //     updated_at: Utc::now(),
-        //     project: project.clone(),
-        //     snapshot: snapshot.clone(),
-        //     bindings: None,
-        //     num_classes: 0,
-        //     num_features: 0,
-        // };
         let dataset = snapshot.tabular_dataset();
         let status = Status::in_progress;
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
@@ -102,13 +83,13 @@ impl Model {
           INSERT INTO quackml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
           VALUES ($1, $2, $3, $4, cast($5 as status), $6, $7, $8, $9)
           RETURNING id, project_id, snapshot_id, algorithm, hyperparams, status, metrics, search, search_params, search_args, created_at, updated_at;",
-          params![project.id, snapshot.id, algorithm.to_string(), serde_json::to_string(&hyperparams).unwrap(), status.to_string(), search.map_or("grid".to_string(),|s| s.to_string()), serde_json::to_string(&search_params).unwrap(), serde_json::to_string(&search_args).unwrap(), dataset.num_features as i64], |row| {
+          params![project.id, snapshot.id, algorithm.to_string(), serde_json::to_string(&hyperparams).unwrap(), status.to_string(), search.map(|s| s.to_string()), serde_json::to_string(&search_params).unwrap(), serde_json::to_string(&search_args).unwrap(), dataset.num_features as i64], |row| {
             let model = Model {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
                 snapshot_id: row.get(2)?,
                 algorithm: Algorithm::from_str(&row.get::<_, String>(3)?).unwrap(),
-                hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
+                hyperparams: serde_json::from_str(&row.get::<_, String>(4).inspect(|j| println!("Hperparams: {:?}", j))?).inspect(|v| println!("After Hyperparams {:?}:" , v)).unwrap(),
                 status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
                 metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
                 search: row.get::<_, Option<String>>(7)?.inspect(|s| println!("{}", s)).map(|s| Search::from_str(&s)).transpose().unwrap(),
@@ -173,22 +154,8 @@ impl Model {
                 search: row.get::<_, String>(8).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
                 search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                 search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                created_at: row.get::<_, duckdb::types::Value>(11).map(|v| match v {
-                    duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                        DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                        Utc,
-                    ),
-                    _ => panic!("Expected a timestamp"),
-
-                }).unwrap(),
-                updated_at: row.get::<_, duckdb::types::Value>(12).map(|v| match v {
-                    duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                        DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                        Utc,
-                    ),
-                    _ => panic!("Expected a timestamp"),
-
-                }).unwrap(),
+                created_at: row.get(11).unwrap(),
+                updated_at: row.get(12).unwrap(),
                 project: project.clone(),
                 snapshot: snapshot.clone(),
                 bindings: None,
@@ -329,7 +296,10 @@ impl Model {
                             hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
                             status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
                             metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
-                            search: row.get::<_, String>(7).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
+                            search: row.get::<_, duckdb::types::Value>(7).map(|v| match v {
+                                duckdb::types::Value::Text(s) => Some(Search::from_str(s.as_str()).unwrap()),
+                                _ => None,
+                            }).unwrap(),
                             search_params: row.get::<_, String>(8).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                             search_args: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
                             created_at: row.get(10).unwrap(),
@@ -866,6 +836,8 @@ impl Model {
             self.hyperparams = best_hyperparams.unwrap().clone();
             self.metrics = Some(json!(metrics));
         };
+        println!("Hyperparams: {:?}", self.hyperparams);
+        println!("Metrics: {:?}", self.metrics);
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
 
         conn.execute(

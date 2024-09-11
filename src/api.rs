@@ -804,9 +804,13 @@ impl VScalar for PredictScalar {
         let project_name = String::from(&binding[0]);
         let binding = input.list_vector(1);
         let features = binding.to_vec::<f32>();
-        let result = predict_f32(project_name.as_str(), features);
+        let mut results = Vec::with_capacity(features.len());
+        for feature_vector in features {
+            let result = predict_f32(project_name.as_str(), feature_vector.to_vec());
+            results.push(result);
+        }
         let output = output.as_mut_slice::<f32>();
-        output[0] = result;
+        output[..results.len()].copy_from_slice(&results);
         Ok(())
     }
 
