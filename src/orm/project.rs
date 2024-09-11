@@ -113,22 +113,8 @@ impl Project {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     task: Task::from_str(&row.get::<_, String>(2)?).unwrap(),
-                    created_at: row.get::<_,duckdb::types::Value>(3).map(|v| match v {
-                        duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                            DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                            Utc,
-                        ),
-                        _ => panic!("Expected a timestamp"),
-
-                    }).unwrap(),
-                    updated_at: row.get::<_,duckdb::types::Value>(4).map(|v| match v {
-                        duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                            DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                            Utc,
-                        ),
-                        _ => panic!("Expected a timestamp"),
-
-                    }).unwrap(),
+                    created_at: row.get(3).unwrap(),
+                    updated_at: row.get(4).unwrap()
                 });
                 Ok(project)
             },
@@ -147,22 +133,8 @@ impl Project {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     task: Task::from_str(&row.get::<_, String>(2)?).unwrap(),
-                    created_at: row.get::<_,duckdb::types::Value>(3).map(|v| match v {
-                        duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                            DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                            Utc,
-                        ),
-                        _ => panic!("Expected a timestamp"),
-
-                    }).unwrap(),
-                    updated_at: row.get::<_,duckdb::types::Value>(4).map(|v| match v {
-                        duckdb::types::Value::Timestamp(ts, i) => DateTime::from_utc(
-                            DateTime::from_timestamp(i, 0).unwrap().naive_utc(),
-                            Utc,
-                        ),
-                        _ => panic!("Expected a timestamp"),
-
-                    }).unwrap(),
+                    created_at: row.get(3).unwrap(),
+                    updated_at: row.get(4).unwrap(),
                 };
                 Ok(project)
             },
@@ -172,16 +144,13 @@ impl Project {
     pub fn create(name: &str, task: Task) -> Project {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         conn
-        .query_row("INSERT INTO quackml.projects (name, task) VALUES ($1, $2) RETURNING id, name, task, created_at, updated_at;", params![name, task.to_string()],
+        .query_row("INSERT INTO quackml.projects (name, task) VALUES ($1, $2) RETURNING id, name, task::TEXT, created_at, updated_at;", params![name, task.to_string()],
     |row| {
         let project = Some(
             Project {
                 id: row.get(0)?,
                 name: row.get(1)?,
-                task: row.get::<_, Value>(2).map(|v| match v {
-                                duckdb::types::Value::Enum(s) => Task::from_str(&s).unwrap(),
-                                _ => panic!("Expected a string"),
-                            }).unwrap(),
+                task: row.get::<_, String>(2).map(|v| Task::from_str(&v).unwrap()).unwrap(),
                 created_at: row.get(3).unwrap(),
                 updated_at: row.get(4).unwrap(),
             }

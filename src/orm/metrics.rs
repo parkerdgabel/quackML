@@ -164,11 +164,14 @@ impl ConfusionMatrix {
             .metrics
             .iter()
             .map(|m| m.tp / (m.tp + m.fn_))
+            .map(|x| if x.is_nan() { 1.0 } else { x })
+            // .filter(|&x| !x.is_nan())
             .collect::<Vec<f32>>();
         let precisions = self
             .metrics
             .iter()
             .map(|m| m.tp / (m.tp + m.fp))
+            // .filter(|&x| !x.is_nan())
             .collect::<Vec<f32>>();
 
         let mut f1s = Vec::new();

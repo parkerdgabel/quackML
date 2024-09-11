@@ -167,7 +167,7 @@ impl Column {
     fn nominal_type(duckdb_type: &str) -> bool {
         matches!(
             duckdb_type,
-            "bpchar" | "text" | "varchar" | "bpchar[]" | "text[]" | "varchar[]"
+            "BPCHAR" | "TEXT" | "VARCHAR" | "BPCHAR[]" | "TEXT[]" | "VARCHAR[]"
         )
     }
 
@@ -391,7 +391,7 @@ pub struct ColumnRowPosition {
 pub struct Snapshot {
     pub(crate) id: i64,
     pub(crate) relation_name: String,
-    pub(crate) y_column_name: String,
+    pub(crate) y_column_name: Vec<String>,
     pub(crate) test_size: f32,
     pub(crate) test_sampling: Sampling,
     pub(crate) status: Status,
@@ -419,7 +419,11 @@ impl Snapshot {
             Err(_) => "{}".to_string()
         };
         let analysis: Option<IndexMap<String, f32>> = Some(serde_json::from_str(&json).unwrap());
-        let y_column_name = row.get::<_, String>(2).unwrap();
+        let y_column_name = row.get::<_, duckdb::types::Value>(2).map(|v| match v {
+            duckdb::types::Value::List(vec) => vec.into_iter().map(|v| match v {duckdb::types::Value::Text(s) => s, _ => String::default()}).collect(),
+            _ => panic!("Expected a list of strings"),
+        
+        }).unwrap_or(vec!{});
         
         let mut s = Snapshot {
             id: row.get(0).unwrap(),
@@ -504,19 +508,20 @@ impl Snapshot {
         schema_name: &str,
         table_name: &str,
         preprocessors: HashMap<String, Preprocessor>,
-        y_column_name: Option<String>,
+        y_column_name: Option<Vec<String>>,
     ) -> Vec<Column> {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let mut binding = conn
-        .prepare("SELECT column_name::TEXT, data_type::TEXT, is_nullable FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position ASC")
+        .prepare("SELECT column_name::TEXT, data_type::TEXT, is_nullable, ordinal_position FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position ASC")
         .unwrap();
-        let res  =binding
+        let res = binding
         .query_and_then(
             params![schema_name, table_name],
             |row| -> Result<Column, duckdb::Error> {
-                let mut position = 0;
                 let name = row.get::<_, String>(0).unwrap();
                 let mut duckdb_type = row.get::<_, String>(1).unwrap();
+                let position = row.get::<_, i32>(3).unwrap();
+                let position = position as usize;
                 let mut size = 1;
                 let mut array = false;
                 if duckdb_type.starts_with('_') {
@@ -530,9 +535,8 @@ impl Snapshot {
                         _ => panic!("Expected YES or NO"),
                                            
                     }).unwrap();
-                position += 1;
                 let label = match y_column_name {
-                    Some(ref y_column_name) => y_column_name.eq(&name),
+                    Some(ref y_column_name) => y_column_name[0].eq(&name),
                     None => false,
                 };
                 let mut statistics = Statistics::default();
@@ -562,7 +566,7 @@ impl Snapshot {
                     );
                     statistics.categories = Some(categories);
                 }
-                Ok(Column {
+                let res = Ok(Column {
                     name,
                     duckdb_type,
                     nullable,
@@ -572,7 +576,8 @@ impl Snapshot {
                     array,
                     statistics,
                     preprocessor,
-                })
+                });
+                res
             }
         );
         let mut cols = Vec::new();
@@ -584,7 +589,7 @@ impl Snapshot {
 
     pub fn create(
         relation_name: &str,
-        y_column_name: Option<String>,
+        y_column_name: Option<Vec<String>>,
         test_size: f32,
         test_sampling: Sampling,
         materialized: bool,
@@ -611,15 +616,14 @@ impl Snapshot {
         );
 
         if let Some(y_column_name) = &y_column_name {
-            if !columns.iter().any(|c| c.label && &c.name == y_column_name) {
-                panic!(
-                    "Column `{}` not found. Did you pass the correct `y_column_name`?",
-                    y_column_name
-                )
+            for column in y_column_name {
+                if !columns.iter().any(|c| c.name == *column) {
+                    panic!("Column \"{}\" not found in table \"{}\". Please check your column name and try again.", column, relation_name);
+                }
             }
         }
         let y_column_name_param = match y_column_name {
-            Some(y_column_name) => duckdb::types::Value::Text(y_column_name.clone()),
+            Some(y_column_name) => duckdb::types::Value::Text(y_column_name[0].clone()),
             None => duckdb::types::Value::Null,
         };
         let columns_param = duckdb::types::Value::Text(serde_json::to_string(&columns).unwrap());
@@ -629,7 +633,7 @@ impl Snapshot {
         let status_param = duckdb::types::Value::Text(status.to_string());
         let materialzed_param = duckdb::types::Value::Boolean(materialized);
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
-        conn.query_row("INSERT INTO quackml.snapshots (relation_name, y_column_name, test_size, test_sampling, status, columns, materialized) VALUES ($1, $2, $3, $4::sampling, $5, $6, $7) RETURNING id, relation_name, y_column_name, test_size, test_sampling::TEXT, status::TEXT, columns, analysis, created_at, updated_at, materialized;",
+        conn.query_row("INSERT INTO quackml.snapshots (relation_name, y_column_name, test_size, test_sampling, status, columns, materialized) VALUES ($1, array_value($2), $3, $4::sampling, $5, $6, $7) RETURNING id, relation_name, y_column_name, test_size, test_sampling::TEXT, status::TEXT, columns, analysis, created_at, updated_at, materialized;",
         params![relation_name_param, y_column_name_param, test_size_param, test_sampling_param, status_param, columns_param, materialzed_param],
         |row| {
             let s = Snapshot::from_row(&row);
@@ -692,7 +696,7 @@ impl Snapshot {
 
     pub(crate) fn first_label(&self) -> &Column {
         self.labels()
-            .find(|l| l.name == self.y_column_name)
+            .find(|l| l.name == self.y_column_name[0])
             .unwrap()
     }
 
@@ -951,7 +955,7 @@ impl Snapshot {
                 };
 
                 match column.duckdb_type.as_str() {
-                    "bpchar" | "text" | "varchar" => {
+                    "BPCHAR" | "TEXT" | "VARCHAR" => {
                         match row.get::<_, Option<String>>(column.position).unwrap() {
                             Some(text) => vector.push(text),
                             None => panic!("NULL training text is not handled"),
@@ -1041,7 +1045,7 @@ impl Snapshot {
                 };
 
                 match column.duckdb_type.as_str() {
-                    "bpchar" | "text" | "varchar" => {
+                    "BPCHAR" | "TEXT" | "VARCHAR" => {
                         match row.get::<_, Option<String>>(column.position).unwrap() {
                             Some(text) => vector.push(text),
                             None => panic!("NULL training text is not handled"),
@@ -1209,14 +1213,14 @@ impl Snapshot {
                     // Categorical encoding types
                     Some(categories) => {
                         let key = match column.duckdb_type.as_str() {
-                            "BOOLEAN" => row.get::<_, bool>(column.position).map(|v| v.to_string()),
-                            "SMALLINT" => row.get::<_, i16>(column.position).map(|v| v.to_string()),
-                            "INTEGER" => row.get::<_, i32>(column.position).map(|v| v.to_string()),
-                            "BIGINT" => row.get::<_, i64>(column.position).map(|v| v.to_string()),
-                            "REAL" => row.get::<_, f32>(column.position).map(|v| v.to_string()),
-                            "DOUBLE" => row.get::<_, f64>(column.position).map(|v| v.to_string()),
+                            "BOOLEAN" => row.get::<_, bool>(column.position - 1).map(|v| v.to_string()),
+                            "SMALLINT" => row.get::<_, i16>(column.position - 1).map(|v| v.to_string()),
+                            "INTEGER" => row.get::<_, i32>(column.position - 1).map(|v| v.to_string()),
+                            "BIGINT" => row.get::<_, i64>(column.position - 1).map(|v| v.to_string()),
+                            "REAL" => row.get::<_, f32>(column.position - 1).map(|v| v.to_string()),
+                            "DOUBLE" => row.get::<_, f64>(column.position - 1).map(|v| v.to_string()),
                             "VARCHAR" | "CHAR" => {
-                                row.get::<_, String>(column.position).map(|v| v.to_string())
+                                row.get::<_, String>(column.position - 1).map(|v| v.to_string())
                             }
                             _ => panic!(
                                 "Unhandled type for categorical variable: {} {:?}",
@@ -1261,7 +1265,7 @@ impl Snapshot {
                             match column.duckdb_type.as_str() {
                                 // TODO handle NULL in arrays
                                 "BOOLEAN[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position).unwrap();
+                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
 
                                     check_column_size(column, vec.len());
                                     for j in vec {
@@ -1269,7 +1273,7 @@ impl Snapshot {
                                     }
                                 }
                                 "SMALLINT[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position).unwrap();
+                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
 
                                     check_column_size(column, vec.len());
 
@@ -1278,7 +1282,7 @@ impl Snapshot {
                                     }
                                 }
                                 "INTEGER[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position).unwrap();
+                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
 
                                     check_column_size(column, vec.len());
 
@@ -1287,7 +1291,7 @@ impl Snapshot {
                                     }
                                 }
                                 "BIGINT[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position).unwrap();
+                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
 
                                     check_column_size(column, vec.len());
 
@@ -1296,7 +1300,7 @@ impl Snapshot {
                                     }
                                 }
                                 "REAL[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position).unwrap();
+                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
 
                                     check_column_size(column, vec.len());
 
@@ -1305,7 +1309,7 @@ impl Snapshot {
                                     }
                                 }
                                 "DOUBLE[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position).unwrap();
+                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
 
                                     check_column_size(column, vec.len());
 
@@ -1321,13 +1325,13 @@ impl Snapshot {
                         } else {
                             // scalar
                             let float = match column.duckdb_type.as_str() {
-                                "BOOLEAN" => row.get(column.position).unwrap(),
-                                "SMALLINT" => row.get(column.position).unwrap(),
-                                "INTEGER" => row.get(column.position).unwrap(),
-                                "BIGINT" => row.get(column.position).unwrap(),
-                                "REAL" => row.get(column.position).unwrap(),
-                                "DOUBLE" => row.get(column.position).unwrap(),
-                                "DECIMAL" => row.get(column.position).unwrap(),
+                                "BOOLEAN" => row.get(column.position - 1).unwrap(),
+                                "SMALLINT" => row.get(column.position - 1).unwrap(),
+                                "INTEGER" => row.get(column.position - 1).unwrap(),
+                                "BIGINT" => row.get(column.position - 1).unwrap(),
+                                "REAL" => row.get(column.position - 1).unwrap(),
+                                "DOUBLE" => row.get(column.position - 1).unwrap(),
+                                "DECIMAL" => row.get(column.position - 1).unwrap(),
 
                                 _ => panic!(
                                     "Unhandled type for quantitative scalar column: {} {:?}",
