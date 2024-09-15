@@ -1,10 +1,12 @@
 use core::{f32, f64};
 use std::ffi::{c_char, c_float};
 use std::fmt::Write;
+use std::result;
 use std::str::FromStr;
 use std::{default, ffi::CString};
 
 use anyhow::anyhow;
+use duckdb::core::{DataChunkHandle, ListVector};
 use duckdb::vtab::VScalar;
 use duckdb::{
     core::{Inserter, LogicalTypeHandle, LogicalTypeId},
@@ -12,7 +14,7 @@ use duckdb::{
     vtab::{Free, VTab},
     Rows,
 };
-use libduckdb_sys::{duckdb_list_entry, duckdb_string_t, DuckDbString};
+use libduckdb_sys::{duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, DuckDbString};
 use log::*;
 use ndarray::{AssignElem, Zip};
 
@@ -983,11 +985,11 @@ impl VScalar for EmbedScalar {
         let text = String::from(&text_param[0]);
         let kwargs = serde_json::from_str(&String::from(&kwargs_param[0])).unwrap();
         let result = embed(&model, &text, kwargs);
-        println!("Result: {:?}", result);
         // let output = output.as_mut_ptr();
-        println!("Output: {:?}", output.logical_type());
-        let o = output.as_mut_slice::<*mut duckdb_list_entry>();
-        println!("Output: {:?}", o);
+        let mut new_list_vector = ListVector::from(output);
+        new_list_vector.set_child(result.as_slice());
+        new_list_vector.set_entry(0, 0, result.len());
+
         // o[0] = result.as_ptr() as *mut
         Ok(())
     }
