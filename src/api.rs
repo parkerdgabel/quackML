@@ -12,7 +12,7 @@ use duckdb::{
     vtab::{Free, VTab},
     Rows,
 };
-use libduckdb_sys::{duckdb_string_t, DuckDbString};
+use libduckdb_sys::{duckdb_list_entry, duckdb_string_t, DuckDbString};
 use log::*;
 use ndarray::{AssignElem, Zip};
 
@@ -55,6 +55,11 @@ pub fn python_package_version(name: &str) -> String {
     unwrap_or_error!(crate::bindings::python::package_version(name))
 }
 
+#[cfg(feature = "python")]
+pub fn python_version() -> String {
+    unwrap_or_error!(crate::bindings::python::version())
+}
+
 #[cfg(not(feature = "python"))]
 pub fn python_package_version(name: &str) {
     error!("Python is not installed, recompile with `--features python`");
@@ -63,11 +68,6 @@ pub fn python_package_version(name: &str) {
 #[cfg(feature = "python")]
 pub fn python_pip_freeze() -> Vec<String> {
     unwrap_or_error!(crate::bindings::python::pip_freeze())
-}
-
-#[cfg(feature = "python")]
-fn python_version() -> String {
-    unwrap_or_error!(crate::bindings::python::version())
 }
 
 #[cfg(not(feature = "python"))]
@@ -965,7 +965,47 @@ fn predict_model_row(model_id: i64, row: &mut Rows) -> f32 {
 //     TableIterator::new(vec![(name, rows)])
 // }
 
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+pub struct EmbedScalar {}
+
+impl VScalar for EmbedScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let binding = input.flat_vector(0);
+        let model_param = binding.as_slice::<duckdb_string_t>();
+        let binding = input.flat_vector(2);
+        let text_param = binding.as_slice::<duckdb_string_t>();
+        let flat_vector = input.flat_vector(2);
+        let kwargs_param = flat_vector.as_slice::<duckdb_string_t>();
+        let model = String::from(&model_param[0]);
+        let text = String::from(&text_param[0]);
+        let kwargs = serde_json::from_str(&String::from(&kwargs_param[0])).unwrap();
+        let result = embed(&model, &text, kwargs);
+        println!("Result: {:?}", result);
+        // let output = output.as_mut_ptr();
+        println!("Output: {:?}", output.logical_type());
+        let o = output.as_mut_slice::<*mut duckdb_list_entry>();
+        println!("Output: {:?}", o);
+        // o[0] = result.as_ptr() as *mut
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Float))
+    }
+}
+
+#[cfg(feature = "python")]
 pub fn embed(transformer: &str, text: &str, kwargs: serde_json::Value) -> Vec<f32> {
     match crate::bindings::transformers::embed(transformer, vec![text], &kwargs) {
         Ok(output) => output.first().unwrap().to_vec(),

@@ -9,8 +9,10 @@ use crate::{
     context,
     orm::{Dataset, Hyperparams},
 };
+#[cfg(feature = "python")]
 use pyo3::{pyfunction, PyResult, Python};
 
+#[cfg(feature = "python")]
 #[pyfunction]
 pub fn r_insert_logs(project_id: i64, model_id: i64, logs: String) -> PyResult<String> {
     let result: Result<i64, _> = context::run(|conn| {
@@ -24,6 +26,7 @@ pub fn r_insert_logs(project_id: i64, model_id: i64, logs: String) -> PyResult<S
     Ok(format!("Inserted logs with id: {}", result.unwrap()))
 }
 
+#[cfg(feature = "python")]
 #[pyfunction]
 pub fn r_log(level: String, message: String) -> PyResult<String> {
     match level.as_str() {
@@ -71,6 +74,7 @@ macro_rules! get_module {
 pub mod langchain;
 pub mod lightgbm;
 pub mod linfa;
+#[cfg(feature = "python")]
 pub mod python;
 pub mod sklearn;
 pub mod transformers;
@@ -113,10 +117,12 @@ pub trait Bindings: Send + Sync + Debug + AToAny {
         Self: Sized;
 }
 
+#[cfg(feature = "python")]
 pub trait TracebackError<T> {
     fn format_traceback(self, py: Python<'_>) -> Result<T>;
 }
 
+#[cfg(feature = "python")]
 impl<T> TracebackError<T> for PyResult<T> {
     fn format_traceback(self, py: Python<'_>) -> Result<T> {
         self.map_err(|e| match e.traceback(py) {

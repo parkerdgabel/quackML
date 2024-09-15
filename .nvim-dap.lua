@@ -16,6 +16,7 @@ dap.configurations.rust = {
 		request = "launch",
 		sourceLanguages = { "rust", "c++" },
 		program = function()
+			vim.fn.setenv("OMP_NUM_THREADS", "1")
 			return vim.fn.getcwd() .. "/duckdb-rs/duckdb/build/debug/duckdb"
 		end,
 		args = { "-unsigned", "-cmd", "set allow_extensions_metadata_mismatch=true;load 'quack_ml.duckdb_extension'" },
@@ -28,9 +29,7 @@ dap.configurations.rust = {
 
 dap.configurations.rust[1] = setmetatable(dap.configurations.rust[1], {
 	__call = function(config)
-		vim.fn.system(
-			'RUSTFLAGS="-C link-arg=-Wl,-rpath,/usr/lib -L /opt/homebrew/opt/libomp/lib -L /opt/homebrew/Cellar/python@3.11/3.11.9_1/Frameworks/Python.framework/Versions/3.11/lib" cargo build'
-		)
+		vim.fn.system("cargo build")
 		vim.fn.system("cp ./target/debug/libquack_ml.dylib quack_ml.duckdb_extension")
 		return config
 	end,
