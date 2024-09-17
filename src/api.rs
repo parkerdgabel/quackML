@@ -1,11 +1,12 @@
 use core::{f32, f64};
 use std::ffi::{c_char, c_float};
 use std::fmt::Write;
+use std::io::ErrorKind;
 use std::result;
 use std::str::FromStr;
 use std::{default, ffi::CString};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Error};
 use duckdb::core::{DataChunkHandle, ListVector};
 use duckdb::vtab::VScalar;
 use duckdb::{
@@ -806,8 +807,30 @@ impl VScalar for PredictScalar {
         let project_name = String::from(&binding[0]);
         let binding = input.list_vector(1);
         let features = binding.to_vec::<f32>();
-        let mut results = Vec::with_capacity(features.len());
+        if features.is_empty() {
+            let error = std::io::Error::new(ErrorKind::InvalidInput, "Features cannot be empty");
+            return Err(Box::new(error));
+        }
+
+        let mut unwrapped_features: Vec<Vec<f32>> = Vec::with_capacity(features.len());
         for feature_vector in features {
+            let mut unwrapped_vector: Vec<f32> = Vec::with_capacity(feature_vector.len());
+            for feature in feature_vector {
+                match feature {
+                    Some(value) => unwrapped_vector.push(value),
+                    None => {
+                        let error = std::io::Error::new(
+                            ErrorKind::InvalidInput,
+                            "Feature vector contains None values",
+                        );
+                        return Err(Box::new(error));
+                    }
+                }
+            }
+            unwrapped_features.push(unwrapped_vector);
+        }
+        let mut results = Vec::with_capacity(unwrapped_features.len());
+        for feature_vector in unwrapped_features {
             let result = predict_f32(project_name.as_str(), feature_vector.to_vec());
             results.push(result);
         }
@@ -1088,6 +1111,62 @@ pub fn transform_json(
     }
 }
 
+pub struct ModelTransformScalar {}
+
+impl VScalar for ModelTransformScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let size = input.len();
+        let binding = input.flat_vector(0);
+        let model_param = binding.as_slice::<duckdb_string_t>();
+        let model_param: Vec<String> = model_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let binding = input.flat_vector(2);
+        let args_param = binding.as_slice::<duckdb_string_t>();
+        let args_param: Vec<String> = args_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let binding = input.list_vector(3);
+        let inputs = binding.to_vec::<duckdb_string_t>();
+        let unwrapped_inputs: Vec<Vec<String>> = inputs
+            .iter()
+            .map(|input| input.iter().map(|s| String::from(&s.unwrap())).collect())
+            .collect();
+        let unwrapped_inputs = unwrapped_inputs.get(0).unwrap();
+        // let result = transform_string(
+        //     model_param,
+        //     serde_json::Value::from_str(&args_param).unwrap(),
+        //     unwrapped_inputs
+        //         .to_vec()
+        //         .iter()
+        //         .map(|s| s.as_str())
+        //         .collect(),
+        // );
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+}
 #[allow(unused_variables)] // cache is maintained for api compatibility
 pub fn transform_string(
     task: String,
