@@ -15,7 +15,10 @@ use duckdb::{
     vtab::{Free, VTab},
     Rows,
 };
-use libduckdb_sys::{duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, DuckDbString};
+use itertools::izip;
+use libduckdb_sys::{
+    duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, duckdb_vector, DuckDbString,
+};
 use log::*;
 use ndarray::{AssignElem, Zip};
 
@@ -998,22 +1001,44 @@ impl VScalar for EmbedScalar {
         input: &mut duckdb::core::DataChunkHandle,
         output: &mut duckdb::core::FlatVector,
     ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let size = input.len();
         let binding = input.flat_vector(0);
         let model_param = binding.as_slice::<duckdb_string_t>();
+        let model_param: Vec<String> = model_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
         let binding = input.flat_vector(2);
         let text_param = binding.as_slice::<duckdb_string_t>();
+        let text_param: Vec<String> = text_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
         let flat_vector = input.flat_vector(2);
         let kwargs_param = flat_vector.as_slice::<duckdb_string_t>();
-        let model = String::from(&model_param[0]);
-        let text = String::from(&text_param[0]);
-        let kwargs = serde_json::from_str(&String::from(&kwargs_param[0])).unwrap();
-        let result = embed(&model, &text, kwargs);
-        // let output = output.as_mut_ptr();
+        let kwargs_param: Vec<String> = kwargs_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let args = izip!(model_param, text_param, kwargs_param);
+        let results: Vec<Vec<f32>> = args
+            .map(|(model, text, kwargs)| {
+                embed(&model, &text, serde_json::from_str(&kwargs).unwrap())
+            })
+            .collect();
+        let binding = Vec::from_iter(results.iter().map(|r| r.as_slice()).flatten().map(|v| *v));
+        let final_results = binding.as_slice();
         let mut new_list_vector = ListVector::from(output);
-        new_list_vector.set_child(result.as_slice());
-        new_list_vector.set_entry(0, 0, result.len());
-
-        // o[0] = result.as_ptr() as *mut
+        new_list_vector.set_child(final_results);
+        for i in 0..size {
+            new_list_vector.set_entry(i, i * results[i].len(), results[i].len())
+        }
         Ok(())
     }
 
@@ -1111,9 +1136,36 @@ pub fn transform_json(
     }
 }
 
-pub struct ModelTransformScalar {}
+fn extract_text_from_json(json: &serde_json::Value) -> String {
+    match json {
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("generated_text") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            if let Some(text) = map.get("translation_text") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            if let Some(text) = map.get("summary_text") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            if let Some(text) = map.get("answer") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            // Add more fields as needed for different task types
+            "".to_string()
+        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(|v| extract_text_from_json(v))
+            .collect::<Vec<String>>()
+            .join(" "),
+        _ => "".to_string(),
+    }
+}
 
-impl VScalar for ModelTransformScalar {
+pub struct TaskTransformScalar {}
+
+impl VScalar for TaskTransformScalar {
     unsafe fn func(
         func: &duckdb::vtab::FunctionInfo,
         input: &mut DataChunkHandle,
@@ -1128,7 +1180,7 @@ impl VScalar for ModelTransformScalar {
             .take(size)
             .map(String::from)
             .collect();
-        let binding = input.flat_vector(2);
+        let binding = input.flat_vector(1);
         let args_param = binding.as_slice::<duckdb_string_t>();
         let args_param: Vec<String> = args_param
             .to_vec()
@@ -1136,14 +1188,45 @@ impl VScalar for ModelTransformScalar {
             .take(size)
             .map(String::from)
             .collect();
-        let binding = input.list_vector(3);
+        let binding = input.list_vector(2);
         let inputs = binding.to_vec::<duckdb_string_t>();
         let unwrapped_inputs: Vec<Vec<String>> = inputs
             .iter()
             .map(|input| input.iter().map(|s| String::from(&s.unwrap())).collect())
             .collect();
-        let unwrapped_inputs = unwrapped_inputs.get(0).unwrap();
-        // let result = transform_string(
+        let results: Vec<serde_json::Value> = izip!(model_param, args_param, unwrapped_inputs)
+            .map(|(model, args, inputs)| {
+                let model_value = match serde_json::from_str::<serde_json::Value>(&model) {
+                    Ok(json_value) => transform_json(
+                        json_value,
+                        serde_json::Value::from_str(&args).unwrap(),
+                        inputs.iter().map(|s| s.as_str()).collect(),
+                    ),
+                    Err(e) => transform_string(
+                        model,
+                        serde_json::Value::from_str(&args).unwrap(),
+                        inputs.iter().map(|s| s.as_str()).collect(),
+                    ),
+                };
+                model_value
+            })
+            .collect();
+        println!("{:?}", results);
+        let extracted_results: Vec<String> = results
+            .iter()
+            .map(|result| extract_text_from_json(result))
+            .collect();
+        let mut result_column = ListVector::from(output);
+        let result_column_child = result_column.child(extracted_results.len());
+        for (i, text) in extracted_results.iter().enumerate() {
+            result_column_child.insert(i, text.as_str());
+        }
+
+        result_column.set_len(extracted_results.len());
+        for i in 0..size {
+            result_column.set_entry(i, i * inputs[i].len(), inputs[i].len())
+        }
+
         //     model_param,
         //     serde_json::Value::from_str(&args_param).unwrap(),
         //     unwrapped_inputs

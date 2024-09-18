@@ -38,7 +38,7 @@ pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
         .expect("could not register scalar function");
     conn.register_scalar_function::<api::EmbedScalar>("embed")
         .expect("expected to register scalar function");
-    conn.register_scalar_function::<api::ModelTransformScalar>("transform")
+    conn.register_scalar_function::<api::TaskTransformScalar>("transform")
         .expect("could not register scalar function");
     Ok(())
 }
