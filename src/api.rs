@@ -1,10 +1,13 @@
 use core::{f32, f64};
 use std::ffi::{c_char, c_float};
 use std::fmt::Write;
+use std::io::ErrorKind;
+use std::result;
 use std::str::FromStr;
 use std::{default, ffi::CString};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, Error};
+use duckdb::core::{DataChunkHandle, ListVector};
 use duckdb::vtab::VScalar;
 use duckdb::{
     core::{Inserter, LogicalTypeHandle, LogicalTypeId},
@@ -12,7 +15,10 @@ use duckdb::{
     vtab::{Free, VTab},
     Rows,
 };
-use libduckdb_sys::{duckdb_string_t, DuckDbString};
+use itertools::izip;
+use libduckdb_sys::{
+    duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, duckdb_vector, DuckDbString,
+};
 use log::*;
 use ndarray::{AssignElem, Zip};
 
@@ -55,6 +61,11 @@ pub fn python_package_version(name: &str) -> String {
     unwrap_or_error!(crate::bindings::python::package_version(name))
 }
 
+#[cfg(feature = "python")]
+pub fn python_version() -> String {
+    unwrap_or_error!(crate::bindings::python::version())
+}
+
 #[cfg(not(feature = "python"))]
 pub fn python_package_version(name: &str) {
     error!("Python is not installed, recompile with `--features python`");
@@ -63,11 +74,6 @@ pub fn python_package_version(name: &str) {
 #[cfg(feature = "python")]
 pub fn python_pip_freeze() -> Vec<String> {
     unwrap_or_error!(crate::bindings::python::pip_freeze())
-}
-
-#[cfg(feature = "python")]
-fn python_version() -> String {
-    unwrap_or_error!(crate::bindings::python::version())
 }
 
 #[cfg(not(feature = "python"))]
@@ -804,8 +810,30 @@ impl VScalar for PredictScalar {
         let project_name = String::from(&binding[0]);
         let binding = input.list_vector(1);
         let features = binding.to_vec::<f32>();
-        let mut results = Vec::with_capacity(features.len());
+        if features.is_empty() {
+            let error = std::io::Error::new(ErrorKind::InvalidInput, "Features cannot be empty");
+            return Err(Box::new(error));
+        }
+
+        let mut unwrapped_features: Vec<Vec<f32>> = Vec::with_capacity(features.len());
         for feature_vector in features {
+            let mut unwrapped_vector: Vec<f32> = Vec::with_capacity(feature_vector.len());
+            for feature in feature_vector {
+                match feature {
+                    Some(value) => unwrapped_vector.push(value),
+                    None => {
+                        let error = std::io::Error::new(
+                            ErrorKind::InvalidInput,
+                            "Feature vector contains None values",
+                        );
+                        return Err(Box::new(error));
+                    }
+                }
+            }
+            unwrapped_features.push(unwrapped_vector);
+        }
+        let mut results = Vec::with_capacity(unwrapped_features.len());
+        for feature_vector in unwrapped_features {
             let result = predict_f32(project_name.as_str(), feature_vector.to_vec());
             results.push(result);
         }
@@ -965,7 +993,69 @@ fn predict_model_row(model_id: i64, row: &mut Rows) -> f32 {
 //     TableIterator::new(vec![(name, rows)])
 // }
 
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+pub struct EmbedScalar {}
+
+impl VScalar for EmbedScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let size = input.len();
+        let binding = input.flat_vector(0);
+        let model_param = binding.as_slice::<duckdb_string_t>();
+        let model_param: Vec<String> = model_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let binding = input.flat_vector(2);
+        let text_param = binding.as_slice::<duckdb_string_t>();
+        let text_param: Vec<String> = text_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let flat_vector = input.flat_vector(2);
+        let kwargs_param = flat_vector.as_slice::<duckdb_string_t>();
+        let kwargs_param: Vec<String> = kwargs_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let args = izip!(model_param, text_param, kwargs_param);
+        let results: Vec<Vec<f32>> = args
+            .map(|(model, text, kwargs)| {
+                embed(&model, &text, serde_json::from_str(&kwargs).unwrap())
+            })
+            .collect();
+        let binding = Vec::from_iter(results.iter().map(|r| r.as_slice()).flatten().map(|v| *v));
+        let final_results = binding.as_slice();
+        let mut new_list_vector = ListVector::from(output);
+        new_list_vector.set_child(final_results);
+        for i in 0..size {
+            new_list_vector.set_entry(i, i * results[i].len(), results[i].len())
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Float))
+    }
+}
+
+#[cfg(feature = "python")]
 pub fn embed(transformer: &str, text: &str, kwargs: serde_json::Value) -> Vec<f32> {
     match crate::bindings::transformers::embed(transformer, vec![text], &kwargs) {
         Ok(output) => output.first().unwrap().to_vec(),
@@ -1046,6 +1136,120 @@ pub fn transform_json(
     }
 }
 
+fn extract_text_from_json(json: &serde_json::Value) -> String {
+    match json {
+        serde_json::Value::Object(map) => {
+            if let Some(text) = map.get("generated_text") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            if let Some(text) = map.get("translation_text") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            if let Some(text) = map.get("summary_text") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            if let Some(text) = map.get("answer") {
+                return text.as_str().unwrap_or("").to_string();
+            }
+            // Add more fields as needed for different task types
+            "".to_string()
+        }
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(|v| extract_text_from_json(v))
+            .collect::<Vec<String>>()
+            .join(" "),
+        _ => "".to_string(),
+    }
+}
+
+pub struct TaskTransformScalar {}
+
+impl VScalar for TaskTransformScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let size = input.len();
+        let binding = input.flat_vector(0);
+        let model_param = binding.as_slice::<duckdb_string_t>();
+        let model_param: Vec<String> = model_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let binding = input.flat_vector(1);
+        let args_param = binding.as_slice::<duckdb_string_t>();
+        let args_param: Vec<String> = args_param
+            .to_vec()
+            .iter()
+            .take(size)
+            .map(String::from)
+            .collect();
+        let binding = input.list_vector(2);
+        let inputs = binding.to_vec::<duckdb_string_t>();
+        let unwrapped_inputs: Vec<Vec<String>> = inputs
+            .iter()
+            .map(|input| input.iter().map(|s| String::from(&s.unwrap())).collect())
+            .collect();
+        let results: Vec<serde_json::Value> = izip!(model_param, args_param, unwrapped_inputs)
+            .map(|(model, args, inputs)| {
+                let model_value = match serde_json::from_str::<serde_json::Value>(&model) {
+                    Ok(json_value) => transform_json(
+                        json_value,
+                        serde_json::Value::from_str(&args).unwrap(),
+                        inputs.iter().map(|s| s.as_str()).collect(),
+                    ),
+                    Err(e) => transform_string(
+                        model,
+                        serde_json::Value::from_str(&args).unwrap(),
+                        inputs.iter().map(|s| s.as_str()).collect(),
+                    ),
+                };
+                model_value
+            })
+            .collect();
+        println!("{:?}", results);
+        let extracted_results: Vec<String> = results
+            .iter()
+            .map(|result| extract_text_from_json(result))
+            .collect();
+        let mut result_column = ListVector::from(output);
+        let result_column_child = result_column.child(extracted_results.len());
+        for (i, text) in extracted_results.iter().enumerate() {
+            result_column_child.insert(i, text.as_str());
+        }
+
+        result_column.set_len(extracted_results.len());
+        for i in 0..size {
+            result_column.set_entry(i, i * inputs[i].len(), inputs[i].len())
+        }
+
+        //     model_param,
+        //     serde_json::Value::from_str(&args_param).unwrap(),
+        //     unwrapped_inputs
+        //         .to_vec()
+        //         .iter()
+        //         .map(|s| s.as_str())
+        //         .collect(),
+        // );
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+}
 #[allow(unused_variables)] // cache is maintained for api compatibility
 pub fn transform_string(
     task: String,

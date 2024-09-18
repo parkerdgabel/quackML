@@ -12,6 +12,8 @@ use crate::context::{init_database_context, DATABASE_CONTEXT};
 
 static SCHEMA: &str = include_str!("sql/schema.sql");
 
+use api::activate_venv;
+use api::python_version;
 use duckdb::{
     vtab::{BindInfo, Free, FunctionInfo, InitInfo, VTab},
     Connection, Result,
@@ -28,8 +30,15 @@ pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     init_database_context(&conn);
     run_schema_query()?;
     load_datasets();
+    let res = activate_venv("quackml-venv");
+    println!("venv activation: {:?}", res);
+    println!("Python version: {:?}", python_version());
     conn.register_table_function::<api::TrainVTab>("train")?;
     conn.register_scalar_function::<api::PredictScalar>("predict")
+        .expect("could not register scalar function");
+    conn.register_scalar_function::<api::EmbedScalar>("embed")
+        .expect("expected to register scalar function");
+    conn.register_scalar_function::<api::TaskTransformScalar>("transform")
         .expect("could not register scalar function");
     Ok(())
 }
