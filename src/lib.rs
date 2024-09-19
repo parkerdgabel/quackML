@@ -15,6 +15,7 @@ static SCHEMA: &str = include_str!("sql/schema.sql");
 use api::activate_venv;
 use api::python_version;
 use duckdb::{
+    params,
     vtab::{BindInfo, Free, FunctionInfo, InitInfo, VTab},
     Connection, Result,
 };
@@ -33,6 +34,8 @@ pub fn quackml_ext_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     let res = activate_venv("quackml-venv");
     println!("venv activation: {:?}", res);
     println!("Python version: {:?}", python_version());
+    conn.execute("LOAD json;", params![])
+        .expect("Expected to load json extension");
     conn.register_table_function::<api::TrainVTab>("train")?;
     conn.register_scalar_function::<api::PredictScalar>("predict")
         .expect("could not register scalar function");
