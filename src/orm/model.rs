@@ -80,7 +80,7 @@ impl Model {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let result = conn
         .query_row("
-          INSERT INTO quackml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
+        INSERT INTO quackml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
           VALUES ($1, $2, $3, $4, cast($5 as status), $6, $7, $8, $9)
           RETURNING id, project_id, snapshot_id, algorithm, hyperparams, status, metrics, search, search_params, search_args, created_at, updated_at;",
           params![project.id, snapshot.id, algorithm.to_string(), serde_json::to_string(&hyperparams).unwrap(), status.to_string(), search.map(|s| s.to_string()), serde_json::to_string(&search_params).unwrap(), serde_json::to_string(&search_args).unwrap(), dataset.num_features as i64], |row| {
@@ -121,17 +121,20 @@ impl Model {
         snapshot: &mut Snapshot,
         hyperparams: Value,
     ) -> Result<Model> {
-        let dataset_args = hyperparams.get("dataset_args").unwrap();
+        let dataset_args = hyperparams
+            .get("dataset_args")
+            .map(|v| v.clone())
+            .unwrap_or_else(|| json!({}));
 
         // let dataset = snapshot.text_classification_dataset(dataset_args);
         let dataset = if project.task == Task::text_classification {
-            TextDatasetType::TextClassification(snapshot.text_classification_dataset(dataset_args))
+            TextDatasetType::TextClassification(snapshot.text_classification_dataset(&dataset_args))
         } else if project.task == Task::text_pair_classification {
             TextDatasetType::TextPairClassification(
-                snapshot.text_pair_classification_dataset(dataset_args),
+                snapshot.text_pair_classification_dataset(&dataset_args),
             )
         } else if project.task == Task::conversation {
-            TextDatasetType::Conversation(snapshot.conversation_dataset(dataset_args))
+            TextDatasetType::Conversation(snapshot.conversation_dataset(&dataset_args))
         } else {
             return Err(anyhow!("Unsupported task for finetuning"));
         };
@@ -142,7 +145,7 @@ impl Model {
           INSERT INTO quackml.models (project_id, snapshot_id, algorithm, hyperparams, status, search, search_params, search_args, num_features)
           VALUES ($1, $2, $3, $4, cast($5 as status), $6, $7, $8, $9)
           RETURNING id, project_id, snapshot_id, algorithm, hyperparams, status, metrics, search, search_params, search_args, created_at, updated_at;",
-          params![project.id, snapshot.id, Algorithm::transformers.to_string(), serde_json::to_string(&hyperparams).unwrap(), Status::in_progress.to_string(), None as Option<String>, "{}", dataset.num_features() as i64], |row| {
+          params![project.id, snapshot.id, Algorithm::transformers.to_string(), serde_json::to_string(&hyperparams).unwrap(), Status::in_progress.to_string(), None as Option<String>, "{}", "{}",dataset.num_features() as i64], |row| {
             let model = Model {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
@@ -151,18 +154,15 @@ impl Model {
                 hyperparams: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
                 status: Status::from_str(&row.get::<_, String>(5)?).unwrap(),
                 metrics: row.get::<_, Option<String>>(6)?.map(|s| serde_json::from_str(&s).unwrap()),
-                search: row.get::<_, String>(8).map(|s| Search::from_str(s.as_str())).unwrap().ok(),
-                search_params: row.get::<_, String>(9).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                search_args: row.get::<_, String>(10).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
-                created_at: row.get(11).unwrap(),
-                updated_at: row.get(12).unwrap(),
+                search: row.get::<_, Option<String>>(7)?.map(|s| Search::from_str(s.as_str()).unwrap()),
+                search_params: row.get::<_, Option<String>>(8).unwrap_or(Some("{}".to_string())).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
+                search_args: row.get::<_, Option<String>>(9).unwrap_or(Some("{}".to_string())).map(|s| serde_json::from_str(s.as_str())).unwrap().unwrap(),
+                created_at: row.get(10).unwrap(),
+                updated_at: row.get(11).unwrap(),
                 project: project.clone(),
                 snapshot: snapshot.clone(),
                 bindings: None,
-                num_classes: match project.task {
-                    Task::regression => 0,
-                    _ => snapshot.num_classes(),
-                },
+                num_classes: 0,
                 num_features: snapshot.num_features(),
             };
             Ok(model)
@@ -210,16 +210,18 @@ impl Model {
 
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
 
-        let result = conn.query_row(
-            "UPDATE quackml.models SET metrics = $1, status = $2 WHERE id = $3 RETURNING id;",
+        let result = conn.execute(
+            "UPDATE quackml.models SET metrics = $1::JSON, status = $2 WHERE id = $3;",
             params![
                 serde_json::to_string(&model.metrics).unwrap(),
                 Status::successful.to_string(),
                 model.id
             ],
-            |row| Ok(row.get(0)?),
         );
-        model.id = result?;
+
+        if Ok(1) != result {
+            bail!("Failed to update model metrics");
+        }
 
         // Save the bindings.
         if path.is_dir() {
@@ -249,7 +251,7 @@ impl Model {
         }
 
         conn.execute(
-            "UPDATE quackml.models SET status = $1::quackml.status WHERE id = $2",
+            "UPDATE quackml.models SET status = $1 WHERE id = $2",
             params![Status::successful.to_string(), model.id],
         )?;
 
@@ -266,6 +268,7 @@ impl Model {
                         WHERE m.id = $1;",
                     params![id],
                     |row| {
+                        let model_id = row.get::<_,i64>(0)?;
                         let project_id = row.get::<_,i64>(1)?;
                         let project = Project::find(project_id).unwrap();
                         let snapshot_id = row.get::<_,i64>(2)?;
@@ -278,6 +281,23 @@ impl Model {
                             _ => snapshot.num_classes(),
                         };
                         let bindings: Box<dyn Bindings> = match algorithm {
+                            Algorithm::transformers => {
+                                match project.task {
+                                    Task::text_classification => {
+                                        transformers::TextClassifier::from_id(model_id).unwrap()
+                                    }
+                                    Task::text_pair_classification => {
+                                        // transformers::Estimator::from_bytes(&data).unwrap()
+                                        todo!()
+                                    }
+                                    Task::conversation => {
+                                        // transformers::Estimator::from_bytes(&data).unwrap()
+                                        todo!()
+                                    }
+                                    _ => panic!("Unsupported task for transformers"),
+                                }
+                                                            
+                            },
                             Algorithm::xgboost => xgboost::Estimator::from_bytes(&data).unwrap(),
                             Algorithm::lightgbm => lightgbm::Estimator::from_bytes(&data).unwrap(),
                             Algorithm::linear => match project.task {

@@ -17,7 +17,7 @@ use pyo3::{pyfunction, PyResult, Python};
 pub fn r_insert_logs(project_id: i64, model_id: i64, logs: String) -> PyResult<String> {
     let result: Result<i64, _> = context::run(|conn| {
         let id_value: i64 = conn.query_row(
-            "INSERT INTO quackml.logs (project_id, model_id, logs) VALUES ($1, $2, $3::JSONB) RETURNING id;",
+            "INSERT INTO quackml.logs (project_id, model_id, logs) VALUES ($1, $2, $3::JSON) RETURNING id;",
             params![project_id, model_id, logs],
             |row| row.get(0),
         ).expect("Expected id to return");
@@ -76,7 +76,6 @@ pub mod lightgbm;
 pub mod linfa;
 #[cfg(feature = "python")]
 pub mod python;
-pub mod reinforcement;
 pub mod sklearn;
 pub mod transformers;
 pub mod xgboost;

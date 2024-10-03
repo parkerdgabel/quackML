@@ -8,7 +8,8 @@ use std::{default, ffi::CString};
 
 use anyhow::{anyhow, Error};
 use duckdb::core::{DataChunkHandle, ListVector};
-use duckdb::vtab::VScalar;
+use duckdb::polars::chunked_array::collect;
+use duckdb::vtab::{FunctionInfo, InitInfo, VScalar};
 use duckdb::{
     core::{Inserter, LogicalTypeHandle, LogicalTypeId},
     params,
@@ -17,7 +18,7 @@ use duckdb::{
 };
 use itertools::izip;
 use libduckdb_sys::{
-    duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, duckdb_vector, DuckDbString,
+    duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, duckdb_vector, DuckDBSuccess,
 };
 use log::*;
 use ndarray::{AssignElem, Zip};
@@ -102,8 +103,8 @@ pub fn python_version() -> String {
 //     .unwrap()
 //     .unwrap();
 //
-//     if !shared_preload_libraries.contains("pgml") {
-//         error!("`pgml` must be added to `shared_preload_libraries` setting or models cannot be deployed");
+//     if !shared_preload_libraries.contains("quackml") {
+//         error!("`quackml` must be added to `shared_preload_libraries` setting or models cannot be deployed");
 //     }
 // }
 //
@@ -666,7 +667,7 @@ fn train_joint(
                         }
                     }
                 } else {
-                    info!("Failed to parse deployed model metrics. Check data types of model metadata on pgml.models.metrics");
+                    info!("Failed to parse deployed model metrics. Check data types of model metadata on quackml.models.metrics");
                     deploy = false;
                 }
             }
@@ -696,7 +697,7 @@ fn deploy_model(model_id: i64) -> Vec<(String, String, String)> {
 
     let project_id = context::run(|conn| {
         conn.query_row(
-            "SELECT projects.id from pgml.projects JOIN pgml.models ON models.project_id = projects.id WHERE models.id = $1",
+            "SELECT projects.id from quackml.projects JOIN pgml.models ON models.project_id = projects.id WHERE models.id = $1",
             params![model_id],
             |row| row.get::<_, i64>(0),
         )
@@ -720,7 +721,7 @@ fn deploy_strategy(
 ) -> Vec<(String, String, String)> {
     let (project_id, task) = context::run(|conn| {
         conn.query_row(
-            "SELECT id, task::TEXT from pgml.projects WHERE name = $1",
+            "SELECT id, task::TEXT from quackml.projects WHERE name = $1",
             params![project_name],
             |row| {
                 Ok((
@@ -735,7 +736,7 @@ fn deploy_strategy(
 
     let task = Task::from_str(&task).unwrap();
 
-    let mut sql = "SELECT models.id, models.algorithm::TEXT FROM pgml.models JOIN pgml.projects ON projects.id = models.project_id".to_string();
+    let mut sql = "SELECT models.id, models.algorithm::TEXT FROM quackml.models JOIN pgml.projects ON projects.id = models.project_id".to_string();
     let mut predicate = "\nWHERE projects.name = $1".to_string();
     if let Some(algorithm) = algorithm {
         let _ = write!(
@@ -761,12 +762,12 @@ fn deploy_strategy(
             let _ = write!(
                 sql,
                 "
-                JOIN pgml.deployments ON deployments.project_id = projects.id
+                JOIN quackml.deployments ON deployments.project_id = projects.id
                     AND deployments.model_id = models.id
                     AND models.id != (
                         SELECT deployments.model_id
-                        FROM pgml.deployments
-                        JOIN pgml.projects
+                        FROM quackml.deployments
+                        JOIN quackml.projects
                             ON projects.id = deployments.project_id
                         WHERE projects.name = $1
                         ORDER by deployments.created_at DESC
@@ -805,38 +806,36 @@ impl VScalar for PredictScalar {
         input: &mut duckdb::core::DataChunkHandle,
         output: &mut duckdb::core::FlatVector,
     ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let rows = input.len();
         let binding = input.flat_vector(0);
         let binding: &[duckdb_string_t] = binding.as_slice::<duckdb_string_t>();
-        let project_name = String::from(&binding[0]);
+        let project_names = binding
+            .iter()
+            .take(rows)
+            .map(|s| String::from(s))
+            .collect::<Vec<String>>();
         let binding = input.list_vector(1);
-        let features = binding.to_vec::<f32>();
-        if features.is_empty() {
+        let features = binding.to_vec::<f32>(rows);
+        if features.iter().map(|v| v.len()).any(|l| l == 0) {
             let error = std::io::Error::new(ErrorKind::InvalidInput, "Features cannot be empty");
             return Err(Box::new(error));
         }
+        if features.iter().any(|v| v.iter().any(|o| o.is_none())) {
+            let error = std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "Feature vector contains None values",
+            );
+            return Err(Box::new(error));
+        }
+        let features = features
+            .iter()
+            .map(|v| v.iter().map(|o| o.unwrap()).collect::<Vec<f32>>())
+            .collect::<Vec<Vec<f32>>>();
 
-        let mut unwrapped_features: Vec<Vec<f32>> = Vec::with_capacity(features.len());
-        for feature_vector in features {
-            let mut unwrapped_vector: Vec<f32> = Vec::with_capacity(feature_vector.len());
-            for feature in feature_vector {
-                match feature {
-                    Some(value) => unwrapped_vector.push(value),
-                    None => {
-                        let error = std::io::Error::new(
-                            ErrorKind::InvalidInput,
-                            "Feature vector contains None values",
-                        );
-                        return Err(Box::new(error));
-                    }
-                }
-            }
-            unwrapped_features.push(unwrapped_vector);
-        }
-        let mut results = Vec::with_capacity(unwrapped_features.len());
-        for feature_vector in unwrapped_features {
-            let result = predict_f32(project_name.as_str(), feature_vector.to_vec());
-            results.push(result);
-        }
+        let projects_features = izip!(project_names, features);
+        let results = projects_features
+            .map(|(project_name, feature)| predict_f32(project_name.as_str(), feature))
+            .collect::<Vec<f32>>();
         let output = output.as_mut_slice::<f32>();
         output[..results.len()].copy_from_slice(&results);
         Ok(())
@@ -849,6 +848,122 @@ impl VScalar for PredictScalar {
         ])
     }
 
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Float)
+    }
+}
+
+pub struct PredictProbaScalar {}
+
+impl VScalar for PredictProbaScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let rows = input.len();
+        let binding = input.flat_vector(0);
+        let binding: &[duckdb_string_t] = binding.as_slice::<duckdb_string_t>();
+        let project_names = binding
+            .iter()
+            .take(rows)
+            .map(|s| String::from(s))
+            .collect::<Vec<String>>();
+        let binding = input.list_vector(1);
+        let features = binding.to_vec::<f32>(rows);
+        if features.iter().map(|v| v.len()).any(|l| l == 0) {
+            let error = std::io::Error::new(ErrorKind::InvalidInput, "Features cannot be empty");
+            return Err(Box::new(error));
+        }
+        if features.iter().any(|v| v.iter().any(|o| o.is_none())) {
+            let error = std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "Feature vector contains None values",
+            );
+            return Err(Box::new(error));
+        }
+        let features = features
+            .iter()
+            .map(|v| v.iter().map(|o| o.unwrap()).collect::<Vec<f32>>())
+            .collect::<Vec<Vec<f32>>>();
+        let projects_features = izip!(project_names, features);
+        let results = projects_features
+            .map(|(project_name, feature)| predict_proba(project_name.as_str(), feature))
+            .collect::<Vec<Vec<f32>>>();
+        let output = output.as_mut_slice::<f32>();
+        let mut i = 0;
+        for result in results {
+            output[i] = result[0];
+            i += 1;
+        }
+        Ok(())
+    }
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Float)),
+        ])
+    }
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Float)
+    }
+}
+
+pub struct PredictStringScalar {}
+
+impl VScalar for PredictStringScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let rows = input.len();
+        let binding = input.flat_vector(0);
+        let binding: &[duckdb_string_t] = binding.as_slice::<duckdb_string_t>();
+        let project_names = binding
+            .iter()
+            .take(rows)
+            .map(|s| String::from(s))
+            .collect::<Vec<String>>();
+        let binding = input.flat_vector(1);
+        let feature_strings: Vec<String> = binding
+            .as_slice::<duckdb_string_t>()
+            .iter()
+            .take(rows)
+            .map(|s| String::from(s))
+            .collect();
+
+        let features = feature_strings
+            .iter()
+            .map(|s| s.as_bytes())
+            .map(|b| b.iter().map(|byte| *byte as f32).collect::<Vec<f32>>())
+            .collect::<Vec<Vec<f32>>>();
+
+        if features.iter().any(|v| v.is_empty()) {
+            return Err(Box::new(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "Features cannot be empty",
+            )));
+        }
+
+        let projects_features = izip!(project_names, features);
+        let results = projects_features
+            .map(|(project_name, feature)| predict_f32(project_name.as_str(), feature))
+            .collect::<Vec<f32>>();
+        let output = output.as_mut_slice::<f32>();
+        let mut i = 0;
+        for result in results {
+            output[i] = result;
+            i += 1;
+        }
+        Ok(())
+    }
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        ])
+    }
     fn return_type() -> LogicalTypeHandle {
         LogicalTypeHandle::from(LogicalTypeId::Float)
     }
@@ -964,34 +1079,116 @@ fn predict_model_row(model_id: i64, row: &mut Rows) -> f32 {
 //     vec![(relation_name.to_string(), y_column_name.to_string())]
 // }
 
-// fn load_dataset(
-//     source: &str,
-//     subset: default!(Option<String>, "NULL"),
-//     limit: default!(Option<i64>, "NULL"),
-//     kwargs: default!(JsonB, "'{}'"),
-// ) -> TableIterator<'static, (name!(table_name, String), name!(rows, i64))> {
-//     // cast limit since pgrx doesn't support usize
-//     let limit: Option<usize> = limit.map(|limit| limit.try_into().unwrap());
-//     let (name, rows) = match source {
-//         "breast_cancer" => dataset::load_breast_cancer(limit),
-//         "diabetes" => dataset::load_diabetes(limit),
-//         "digits" => dataset::load_digits(limit),
-//         "iris" => dataset::load_iris(limit),
-//         "linnerud" => dataset::load_linnerud(limit),
-//         "wine" => dataset::load_wine(limit),
-//         _ => {
-//             let rows =
-//                 match crate::bindings::transformers::load_dataset(source, subset, limit, &kwargs.0)
-//                 {
-//                     Ok(rows) => rows,
-//                     Err(e) => error!("{e}"),
-//                 };
-//             (source.into(), rows as i64)
-//         }
-//     };
-//
-//     TableIterator::new(vec![(name, rows)])
-// }
+pub struct LoadDatasetScalar {}
+
+impl VScalar for LoadDatasetScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let rows = input.len();
+        let binding = input.flat_vector(0);
+        let source_param = binding.as_slice::<duckdb_string_t>();
+        let source_param: Vec<String> = source_param
+            .to_vec()
+            .iter()
+            .take(rows)
+            .map(String::from)
+            .collect();
+
+        let binding = input.flat_vector(1);
+        let subset_param = binding.as_slice::<duckdb_string_t>();
+        let subset_param: Vec<Option<String>> = subset_param
+            .to_vec()
+            .iter()
+            .take(rows)
+            .map(|s| String::from(s))
+            .map(|s| if s.is_empty() { None } else { Some(s) })
+            .collect();
+
+        let binding = input.flat_vector(2);
+        let limit_param = binding.as_slice::<i64>();
+        let limit_param: Vec<Option<i64>> = limit_param
+            .to_vec()
+            .iter()
+            .take(rows)
+            .map(|&l| if l < 0 { None } else { Some(l) })
+            .collect();
+
+        let binding = input.flat_vector(3);
+        let kwargs_param = binding.as_slice::<duckdb_string_t>();
+        let kwargs_param: Vec<Option<serde_json::Value>> = kwargs_param
+            .to_vec()
+            .iter()
+            .take(rows)
+            .map(String::from)
+            .map(|s| serde_json::from_str(&s).ok())
+            .collect();
+
+        let args = izip!(source_param, subset_param, limit_param, kwargs_param);
+        let results: Vec<(String, i64)> = args
+            .map(|(source, subset, limit, kwargs)| {
+                let (name, rows) = load_dataset(&source, subset, limit, kwargs);
+                (name, rows)
+            })
+            .collect();
+
+        let final_results = results
+            .iter()
+            .map(|(_, rows)| vec![*rows])
+            .flatten()
+            .collect::<Vec<i64>>();
+        let mut result_column = ListVector::from(output);
+        result_column.set_child(final_results.iter().as_slice());
+
+        for i in 0..rows {
+            result_column.set_entry(i, i, 1)
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Bigint),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Integer))
+    }
+}
+
+fn load_dataset(
+    source: &str,
+    subset: Option<String>,
+    limit: Option<i64>,
+    kwargs: Option<serde_json::Value>,
+) -> (String, i64) {
+    // let subset = subset.as_deref();
+    let limit: Option<usize> = limit.map(|limit| limit.try_into().unwrap());
+    let kwargs = kwargs.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let (name, rows) = match source {
+        "breast_cancer" => dataset::load_breast_cancer(limit),
+        "diabetes" => dataset::load_diabetes(limit),
+        "digits" => dataset::load_digits(limit),
+        "iris" => dataset::load_iris(limit),
+        "linnerud" => dataset::load_linnerud(limit),
+        "wine" => dataset::load_wine(limit),
+        _ => {
+            let rows =
+                match crate::bindings::transformers::load_dataset(source, subset, limit, &kwargs) {
+                    Ok(rows) => rows,
+                    Err(e) => panic!("{e}"),
+                };
+            (source.into(), rows as i64)
+        }
+    };
+    (name, rows)
+}
 
 pub struct EmbedScalar {}
 
@@ -1001,13 +1198,13 @@ impl VScalar for EmbedScalar {
         input: &mut duckdb::core::DataChunkHandle,
         output: &mut duckdb::core::FlatVector,
     ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
-        let size = input.len();
+        let rows = input.len();
         let binding = input.flat_vector(0);
         let model_param = binding.as_slice::<duckdb_string_t>();
         let model_param: Vec<String> = model_param
             .to_vec()
             .iter()
-            .take(size)
+            .take(rows)
             .map(String::from)
             .collect();
         let binding = input.flat_vector(2);
@@ -1015,7 +1212,7 @@ impl VScalar for EmbedScalar {
         let text_param: Vec<String> = text_param
             .to_vec()
             .iter()
-            .take(size)
+            .take(rows)
             .map(String::from)
             .collect();
         let flat_vector = input.flat_vector(2);
@@ -1023,7 +1220,7 @@ impl VScalar for EmbedScalar {
         let kwargs_param: Vec<String> = kwargs_param
             .to_vec()
             .iter()
-            .take(size)
+            .take(rows)
             .map(String::from)
             .collect();
         let args = izip!(model_param, text_param, kwargs_param);
@@ -1036,7 +1233,7 @@ impl VScalar for EmbedScalar {
         let final_results = binding.as_slice();
         let mut new_list_vector = ListVector::from(output);
         new_list_vector.set_child(final_results);
-        for i in 0..size {
+        for i in 0..rows {
             new_list_vector.set_entry(i, i * results[i].len(), results[i].len())
         }
         Ok(())
@@ -1100,7 +1297,7 @@ pub fn rank(
 /// # Example
 ///
 /// ```postgresql
-/// SELECT pgml.clear_gpu_cache(memory_usage => 0.5);
+/// SELECT quackml.clear_gpu_cache(memory_usage => 0.5);
 /// ```
 pub fn clear_gpu_cache(memory_usage: Option<f32>) -> bool {
     match crate::bindings::transformers::clear_gpu_cache(memory_usage) {
@@ -1171,13 +1368,13 @@ impl VScalar for TaskTransformScalar {
         input: &mut DataChunkHandle,
         output: &mut duckdb::core::FlatVector,
     ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
-        let size = input.len();
+        let rows = input.len();
         let binding = input.flat_vector(0);
         let model_param = binding.as_slice::<duckdb_string_t>();
         let model_param: Vec<String> = model_param
             .to_vec()
             .iter()
-            .take(size)
+            .take(rows)
             .map(String::from)
             .collect();
         let binding = input.flat_vector(1);
@@ -1185,11 +1382,11 @@ impl VScalar for TaskTransformScalar {
         let args_param: Vec<String> = args_param
             .to_vec()
             .iter()
-            .take(size)
+            .take(rows)
             .map(String::from)
             .collect();
         let binding = input.list_vector(2);
-        let inputs = binding.to_vec::<duckdb_string_t>();
+        let inputs = binding.to_vec::<duckdb_string_t>(rows);
         let unwrapped_inputs: Vec<Vec<String>> = inputs
             .iter()
             .map(|input| input.iter().map(|s| String::from(&s.unwrap())).collect())
@@ -1223,7 +1420,7 @@ impl VScalar for TaskTransformScalar {
         }
 
         result_column.set_len(extracted_results.len());
-        for i in 0..size {
+        for i in 0..rows {
             result_column.set_entry(i, i * inputs[i].len(), inputs[i].len())
         }
 
@@ -1388,183 +1585,698 @@ pub fn transform_string(
 //             .unwrap();
 //     SetOfIterator::new(python_iter)
 // }
+pub struct GenerateScalar {}
+
+impl VScalar for GenerateScalar {
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        input: &mut DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let rows = input.len();
+        let binding = input.flat_vector(0);
+        let project_names = binding.as_slice::<duckdb_string_t>();
+        let binding = input.flat_vector(1);
+        let inputs = binding.as_slice::<duckdb_string_t>();
+        let binding = input.flat_vector(2);
+        let configs = binding.as_slice::<duckdb_string_t>();
+
+        let results: Vec<String> = izip!(project_names, inputs, configs)
+            .take(rows)
+            .map(|(project_name, input, config)| {
+                let project_name = String::from(project_name);
+                let input = String::from(input);
+                let config: serde_json::Value =
+                    serde_json::from_str(&String::from(config)).unwrap();
+                generate(&project_name, &input, config)
+            })
+            .collect();
+
+        let mut result_column = ListVector::from(output);
+        let result_column_child = result_column.child(results.len());
+        for (i, text) in results.iter().enumerate() {
+            result_column_child.insert(i, text.as_str());
+        }
+
+        result_column.set_len(results.len());
+        for i in 0..rows {
+            result_column.set_entry(i, i, 1);
+        }
+
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        ])
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar))
+    }
+}
+
+#[cfg(feature = "python")]
+fn generate(project_name: &str, input: &str, config: serde_json::Value) -> String {
+    generate_batch(project_name, vec![input], config)
+        .first()
+        .unwrap()
+        .to_string()
+}
+
+#[cfg(feature = "python")]
+fn generate_batch(project_name: &str, inputs: Vec<&str>, config: serde_json::Value) -> Vec<String> {
+    use core::panic;
+
+    match crate::bindings::transformers::generate(
+        Project::get_deployed_model_id(project_name),
+        inputs,
+        config,
+    ) {
+        Ok(output) => output,
+        Err(e) => panic!("{e}"),
+    }
+}
+
+// Bind Data for Finetune Table Function
+#[repr(C)]
+pub struct FinetuneBindData {
+    project_name: *mut c_char,
+    task: *mut c_char,
+    relation_name: *mut c_char,
+    y_column_name: *mut c_char,
+    model_name: *mut c_char, // New model parameter
+    hyperparams: *mut c_char,
+    test_size: *mut c_float,
+    test_sampling: *mut c_char,
+    automatic_deploy: *mut bool,
+    materialize_snapshot: *mut bool,
+}
+
+impl Free for FinetuneBindData {
+    fn free(&mut self) {
+        unsafe {
+            if !self.project_name.is_null() {
+                drop(CString::from_raw(self.project_name));
+            }
+            if !self.task.is_null() {
+                drop(CString::from_raw(self.task));
+            }
+            if !self.relation_name.is_null() {
+                drop(CString::from_raw(self.relation_name));
+            }
+            if !self.y_column_name.is_null() {
+                drop(CString::from_raw(self.y_column_name));
+            }
+            if !self.model_name.is_null() {
+                drop(CString::from_raw(self.model_name));
+            }
+            if !self.hyperparams.is_null() {
+                drop(CString::from_raw(self.hyperparams));
+            }
+            if !self.test_sampling.is_null() {
+                drop(CString::from_raw(self.test_sampling));
+            }
+            if !self.automatic_deploy.is_null() {
+                drop(Box::from_raw(self.automatic_deploy));
+            }
+            if !self.materialize_snapshot.is_null() {
+                drop(Box::from_raw(self.materialize_snapshot));
+            }
+        }
+    }
+}
+
+// Init Data for Finetune Table Function
+#[repr(C)]
+pub struct FinetuneInitData {
+    done: bool,
+}
+
+impl Free for FinetuneInitData {
+    fn free(&mut self) {}
+}
+
+pub struct FinetuneVTab;
+
+impl VTab for FinetuneVTab {
+    type InitData = FinetuneInitData;
+    type BindData = FinetuneBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        // Define the output columns
+        bind.add_result_column("status", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("deployed", LogicalTypeHandle::from(LogicalTypeId::Boolean));
+
+        // Extract parameters
+        let project_name = bind.get_parameter(0).to_string();
+        let task = bind
+            .get_named_parameter("task")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let relation_name = bind
+            .get_named_parameter("relation_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let y_column_name = bind
+            .get_named_parameter("y_column_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let model_name = bind
+            .get_named_parameter("model_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let hyperparams = bind
+            .get_named_parameter("hyperparams")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let test_size = bind
+            .get_named_parameter("test_size")
+            .map_or_else(|| 0.0, |v| v.to_string().parse::<f32>().unwrap_or(0.0));
+        let test_sampling = bind
+            .get_named_parameter("test_sampling")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let automatic_deploy = bind
+            .get_named_parameter("automatic_deploy")
+            .map_or_else(|| false, |v| v.to_string().parse::<bool>().unwrap_or(false));
+        let materialize_snapshot = bind
+            .get_named_parameter("materialize_snapshot")
+            .map_or_else(|| false, |v| v.to_string().parse::<bool>().unwrap_or(false));
+
+        // Assign parameters to BindData
+        (*data).project_name = CString::new(project_name).unwrap().into_raw();
+        (*data).task = CString::new(task).unwrap().into_raw();
+        (*data).relation_name = CString::new(relation_name).unwrap().into_raw();
+        (*data).y_column_name = CString::new(y_column_name).unwrap().into_raw();
+        (*data).model_name = CString::new(model_name).unwrap().into_raw();
+        (*data).hyperparams = CString::new(hyperparams).unwrap().into_raw();
+        (*data).test_sampling = CString::new(test_sampling).unwrap().into_raw();
+
+        // Allocate heap memory for boolean parameters
+        (*data).automatic_deploy = Box::into_raw(Box::new(automatic_deploy));
+        (*data).materialize_snapshot = Box::into_raw(Box::new(materialize_snapshot));
+
+        // Allocate heap memory for test_size
+        (*data).test_size = Box::into_raw(Box::new(test_size));
+
+        Ok(())
+    }
+
+    unsafe fn init(
+        init: &InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        (*data).done = false;
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &FunctionInfo,
+        output: &mut DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_info = func.get_init_data::<FinetuneInitData>();
+        let bind_info = func.get_bind_data::<FinetuneBindData>();
+
+        if (*init_info).done {
+            // No more data to return
+            output.set_len(0);
+        } else {
+            (*init_info).done = true;
+
+            // Retrieve and clone the bound parameters
+            let project_name = CString::from_raw((*bind_info).project_name);
+            let task = CString::from_raw((*bind_info).task);
+            let relation_name = CString::from_raw((*bind_info).relation_name);
+            let y_column_name = CString::from_raw((*bind_info).y_column_name);
+            let model_name = CString::from_raw((*bind_info).model_name);
+            let hyperparams = CString::from_raw((*bind_info).hyperparams);
+            let test_sampling = CString::from_raw((*bind_info).test_sampling);
+
+            let automatic_deploy = *(*bind_info).automatic_deploy;
+            let materialize_snapshot = *(*bind_info).materialize_snapshot;
+            let test_size = *(*bind_info).test_size;
+
+            // Reassign the raw pointers to prevent them from being freed
+            (*bind_info).project_name = CString::into_raw(project_name.clone());
+            (*bind_info).task = CString::into_raw(task.clone());
+            (*bind_info).relation_name = CString::into_raw(relation_name.clone());
+            (*bind_info).y_column_name = CString::into_raw(y_column_name.clone());
+            (*bind_info).model_name = CString::into_raw(model_name.clone());
+            (*bind_info).hyperparams = CString::into_raw(hyperparams.clone());
+            (*bind_info).test_sampling = CString::into_raw(test_sampling.clone());
+
+            // Convert C strings to Rust strings
+            let project_name_str = project_name.to_str().unwrap();
+            let task_opt = match task.to_str() {
+                Ok("") => None,
+                Ok(s) => Some(s),
+                Err(_) => panic!("Failed to parse task string"),
+            };
+            let relation_name_opt = match relation_name.to_str() {
+                Ok("") => None,
+                Ok(s) => Some(s),
+                Err(_) => panic!("Failed to parse relation_name string"),
+            };
+            let y_column_name_opt = match y_column_name.to_str() {
+                Ok("") => None,
+                Ok(s) => Some(vec![s.to_string()]),
+                Err(_) => panic!("Failed to parse y_column_name string"),
+            };
+            let model_name_opt = match model_name.to_str() {
+                Ok("") => None,
+                Ok(s) => Some(s),
+                Err(_) => panic!("Failed to parse model_name string"),
+            };
+            let hyperparams_map: Option<Hyperparams> = match hyperparams.to_str() {
+                Ok("") => None,
+                Ok(s) => Some(serde_json::from_str(s).unwrap()),
+                Err(_) => panic!("Failed to parse hyperparams string"),
+            };
+            let test_sampling_enum = match test_sampling.to_str() {
+                Ok("") => Sampling::stratified, // Default value
+                Ok(s) => Sampling::from_str(s).unwrap_or(Sampling::stratified),
+                Err(_) => panic!("Failed to parse test_sampling string"),
+            };
+
+            // Call the finetune function
+            let result = tune(
+                project_name_str,
+                task_opt,
+                relation_name_opt,
+                y_column_name_opt,
+                model_name_opt,
+                &hyperparams_map.unwrap(),
+                test_size,
+                test_sampling_enum,
+                None,
+                materialize_snapshot,
+            );
+
+            // Populate the output columns
+            let status_column = output.flat_vector(0);
+            let task_column = output.flat_vector(1);
+            let algorithm_column = output.flat_vector(2);
+            let deployed_column: *mut bool = output.flat_vector(3).as_mut_ptr();
+            let (status, task, algorithm, deployed) = result;
+
+            // Insert the results
+            status_column.insert(0, status.as_str());
+            task_column.insert(0, task.as_str());
+            algorithm_column.insert(0, algorithm.as_str());
+            deployed_column.write(deployed);
+
+            output.set_len(1);
+        }
+
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![
+            LogicalTypeHandle::from(LogicalTypeId::Varchar), // project_name
+        ])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(vec![
+            (
+                "task".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "relation_name".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "y_column_name".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "model_name".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "hyperparams".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "test_size".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Float),
+            ),
+            (
+                "test_sampling".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "automatic_deploy".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Boolean),
+            ),
+            (
+                "materialize_snapshot".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Boolean),
+            ),
+        ])
+    }
+}
 //
-// #[cfg(feature = "python")]
-// #[pg_extern(immutable, parallel_safe, name = "generate")]
-// fn generate(project_name: &str, inputs: &str, config: default!(JsonB, "'{}'")) -> String {
-//     generate_batch(project_name, Vec::from([inputs]), config)
-//         .first()
-//         .unwrap()
-//         .to_string()
-// }
+// //// Define the TuneScalar Struct
+// pub struct TuneScalar {}
 //
-// #[cfg(feature = "python")]
-// #[pg_extern(immutable, parallel_safe, name = "generate")]
-// fn generate_batch(
-//     project_name: &str,
-//     inputs: Vec<&str>,
-//     config: default!(JsonB, "'{}'"),
-// ) -> Vec<String> {
-//     match crate::bindings::transformers::generate(
-//         Project::get_deployed_model_id(project_name),
-//         inputs,
-//         config,
-//     ) {
-//         Ok(output) => output,
-//         Err(e) => error!("{e}"),
-//     }
-// }
+// // Implement VScalar Trait for TuneScalar
+// impl VScalar for TuneScalar {
+//     unsafe fn func(
+//         func: &duckdb::vtab::FunctionInfo,
+//         input: &mut DataChunkHandle,
+//         output: &mut duckdb::core::FlatVector,
+//     ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+//         // Number of rows to process
+//         let rows = input.len();
 //
-// #[cfg(feature = "python")]
-// #[allow(clippy::too_many_arguments)]
-// #[pg_extern(parallel_safe)]
-// fn tune(
-//     project_name: &str,
-//     task: default!(Option<&str>, "NULL"),
-//     relation_name: default!(Option<&str>, "NULL"),
-//     _y_column_name: default!(Option<&str>, "NULL"),
-//     model_name: default!(Option<&str>, "NULL"),
-//     hyperparams: default!(JsonB, "'{}'"),
-//     test_size: default!(f32, 0.25),
-//     test_sampling: default!(Sampling, "'stratified'"),
-//     automatic_deploy: default!(Option<bool>, true),
-//     materialize_snapshot: default!(bool, false),
-// ) -> TableIterator<
-//     'static,
-//     (
-//         name!(status, String),
-//         name!(task, String),
-//         name!(algorithm, String),
-//         name!(deployed, bool),
-//     ),
-// > {
-//     let task = task.map(|t| Task::from_str(t).unwrap());
-//     let preprocess = JsonB(serde_json::from_str("{}").unwrap());
-//     let project = match Project::find_by_name(project_name) {
-//         Some(project) => project,
-//         None => Project::create(
-//             project_name,
-//             match task {
-//                 Some(task) => task,
-//                 None => error!(
-//                     "Project `{}` does not exist. To create a new project, provide the task.",
-//                     project_name
-//                 ),
-//             },
-//         ),
-//     };
+//         // Extract input columns
+//         // Column Order:
+//         // 0: project_name (VARCHAR)
+//         // 1: task (VARCHAR, nullable)
+//         // 2: relation_name (VARCHAR, nullable)
+//         // 3: _y_column_name (VARCHAR, nullable)
+//         // 4: model_name (VARCHAR, nullable)
+//         // 5: hyperparams (JSONB)
+//         // 6: test_size (FLOAT)
+//         // 7: test_sampling (VARCHAR)
+//         // 8: automatic_deploy (BOOL, nullable)
+//         // 9: materialize_snapshot (BOOL)
 //
-//     if task.is_some() && task.unwrap() != project.task {
-//         error!(
-//             "Project `{:?}` already exists with a different task: `{:?}`. Create a new project instead.",
-//             project.name, project.task
-//         );
-//     }
+//         let project_name_col = input.flat_vector(0);
+//         let binding = project_name_col.as_slice::<duckdb_string_t>();
+//         let project_name = binding
+//             .iter()
+//             .take(rows)
+//             .map(|s| String::from(s))
+//             .collect::<Vec<String>>();
 //
-//     let mut snapshot = match relation_name {
-//         None => {
-//             let snapshot = project.last_snapshot().expect(
-//                 "You must pass a `relation_name` and `y_column_name` to snapshot the first time you train a model.",
-//             );
+//         let task_col = input.flat_vector(1);
+//         let binding = task_col.as_slice::<duckdb_string_t>();
+//         let task = binding
+//             .iter()
+//             .take(rows)
+//             .map(|s| String::from(s))
+//             .collect::<Vec<String>>();
 //
-//             info!("Using existing snapshot from {}", snapshot.snapshot_name(),);
+//         let relation_name_col = input.flat_vector(2);
+//         let binding = relation_name_col.as_slice::<duckdb_string_t>();
+//         let relation_name = binding
+//             .iter()
+//             .take(rows)
+//             .map(|s| String::from(s))
+//             .collect::<Vec<String>>();
 //
-//             snapshot
-//         }
+//         let y_column_name_col = input.flat_vector(3);
+//         let binding = y_column_name_col.as_slice::<duckdb_string_t>();
+//         let y_column_name = binding
+//             .iter()
+//             .take(rows)
+//             .map(|s| String::from(s))
+//             .collect::<Vec<String>>();
 //
-//         Some(relation_name) => {
-//             info!(
-//                 "Snapshotting table \"{}\", this may take a little while...",
-//                 relation_name
-//             );
+//         let model_name_col = input.flat_vector(4);
+//         let binding = model_name_col.as_slice::<duckdb_string_t>();
+//         let model_name = binding
+//             .iter()
+//             .take(rows)
+//             .map(|s| String::from(s))
+//             .collect::<Vec<String>>();
 //
-//             let snapshot = Snapshot::create(
-//                 relation_name,
-//                 None,
+//         let hyperparams_col = input.flat_vector(5);
+//         let binding = hyperparams_col.as_slice::<duckdb_string_t>();
+//         let hyperparams = binding
+//             .iter()
+//             .take(rows)
+//             .map(|s| String::from(s).as_str())
+//             .map(serde_json::from_str)
+//             .map(|h| Hyperparams::from(h.unwrap()))
+//             .collect::<Vec<Hyperparams>>();
+//         let test_size_col = input.flat_vector(6);
+//         let test_size: Vec<f32> = test_size_col.as_slice::<f32>().to_vec();
+//
+//         let test_sampling_col = input.flat_vector(7);
+//         let test_sampling: Vec<String> = test_sampling_col
+//             .as_slice::<duckdb_string_t>()
+//             .iter()
+//             .map(|s| String::from(s))
+//             .collect::<Vec<String>>();
+//
+//         let automatic_deploy_col = input.flat_vector(8);
+//         let automatic_deploy: Vec<Option<bool>> = automatic_deploy_col
+//             .as_slice::<bool>()
+//             .iter()
+//             .map(|b| Some(*b))
+//             .collect(); // Assuming non-nullable, else handle accordingly
+//
+//         let materialize_snapshot_col = input.flat_vector(9);
+//         let materialize_snapshot: Vec<bool> = materialize_snapshot_col.as_slice::<bool>().to_vec();
+//
+//         // Prepare to collect outputs
+//         let mut statuses = Vec::with_capacity(rows);
+//         let mut tasks = Vec::with_capacity(rows);
+//         let mut algorithms = Vec::with_capacity(rows);
+//         let mut deployed_flags = Vec::with_capacity(rows);
+//
+//         // Iterate over each row and call the `tune` function
+//         for i in 0..rows {
+//             let project_name = &project_name[i];
+//             let task_opt = &task[i];
+//             let relation_name_opt = &relation_name[i];
+//             let y_column_name_opt = &y_column_name[i];
+//             let model_name_opt = &model_name[i];
+//             let hyperparams = &hyperparams[i];
+//             let test_size = test_size[i];
+//             let test_sampling = &test_sampling[i];
+//             let automatic_deploy_opt: Option<bool> = automatic_deploy[i];
+//             let materialize_snapshot = materialize_snapshot[i];
+//
+//             // Convert Sampling string to Sampling enum
+//             let test_sampling_enum =
+//                 Sampling::from_str(test_sampling).unwrap_or(Sampling::stratified);
+//
+//             // Call the `tune` function
+//             let result = tune(
+//                 project_name,
+//                 task_opt,
+//                 Some(relation_name_opt),
+//                 Some(y_column_name_opt),
+//                 Some(model_name_opt),
+//                 &hyperparams,
 //                 test_size,
-//                 test_sampling,
+//                 test_sampling_enum,
+//                 automatic_deploy_opt,
 //                 materialize_snapshot,
-//                 preprocess,
 //             );
+//             let (status, task_str, algorithm, deployed) = result;
 //
-//             if materialize_snapshot {
-//                 info!(
-//                     "Snapshot of table \"{}\" created and saved in {}",
-//                     relation_name,
-//                     snapshot.snapshot_name(),
-//                 );
-//             }
+//             // Collect the results
+//             statuses.push(status);
+//             tasks.push(task_str);
+//             algorithms.push(algorithm);
+//             deployed_flags.push(deployed);
 //
-//             snapshot
-//         }
-//     };
 //
-//     // algorithm will be transformers, stash the model_name in a hyperparam for v1 compatibility.
-//     let mut hyperparams = hyperparams.0.as_object().unwrap().clone();
-//     hyperparams.insert(String::from("model_name"), json!(model_name));
-//     hyperparams.insert(String::from("project_name"), json!(project_name));
-//     let hyperparams = JsonB(json!(hyperparams));
+//         // Populate the output columns
+//         // Output Schema: status (VARCHAR), task (VARCHAR), algorithm (VARCHAR), deployed (BOOL)
 //
-//     // # Default repeatable random state when possible
-//     // let algorithm = Model.algorithm_from_name_and_task(algorithm, task);
-//     // if "random_state" in algorithm().get_params() and "random_state" not in hyperparams:
-//     //     hyperparams["random_state"] = 0
-//     let model = Model::finetune(&project, &mut snapshot, &hyperparams);
-//     let new_metrics: &serde_json::Value = &model.metrics.unwrap().0;
-//     let new_metrics = new_metrics.as_object().unwrap();
+//         // Since DuckDB scalar functions return a single value, we'll serialize the output as JSONB
+//         // Alternatively, consider implementing a Table-Valued Function (TVF) for multiple outputs
 //
-//     let deployed_metrics = Spi::get_one_with_args::<JsonB>(
-//         "
-//         SELECT models.metrics
-//         FROM pgml.models
-//         JOIN pgml.deployments
-//             ON deployments.model_id = models.id
-//         JOIN pgml.projects
-//             ON projects.id = deployments.project_id
-//         WHERE projects.name = $1
-//         ORDER by deployments.created_at DESC
-//         LIMIT 1;",
-//         vec![(PgBuiltInOids::TEXTOID.oid(), project_name.into_datum())],
-//     );
-//
-//     let mut deploy = true;
-//     match automatic_deploy {
-//         // Deploy only if metrics are better than previous model.
-//         Some(true) | None => {
-//             if let Ok(Some(deployed_metrics)) = deployed_metrics {
-//                 let deployed_metrics = deployed_metrics.0.as_object().unwrap();
-//
-//                 let deployed_value = deployed_metrics
-//                     .get(&project.task.default_target_metric())
-//                     .and_then(|value| value.as_f64())
-//                     .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
-//
-//                 // Get the value for the default target metric from new_metrics or provide a default value
-//                 let new_value = new_metrics
-//                     .get(&project.task.default_target_metric())
-//                     .and_then(|value| value.as_f64())
-//                     .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
-//
-//                 if project.task.value_is_better(deployed_value, new_value) {
-//                     deploy = false;
-//                 }
-//             }
+//         // Create a JSON array of results
+//         let mut results_json = Vec::with_capacity(rows);
+//         for i in 0..rows {
+//             let result = json!({
+//                 "status": statuses[i],
+//                 "task": tasks[i],
+//                 "algorithm": algorithms[i],
+//                 "deployed": deployed_flags[i],
+//             });
+//             results_json.push(result);
 //         }
 //
-//         Some(false) => deploy = false,
-//     };
+//         // Serialize the JSON array
+//         let serialized = serde_json::to_vec(&results_json)?;
 //
-//     if deploy {
-//         project.deploy(model.id, Strategy::new_score);
+//         // Set the output as JSONB
+//         output.set_entry(0, &serialized);
+//
+//         Ok(())
 //     }
 //
-//     TableIterator::new(vec![(
-//         project.name,
-//         project.task.to_string(),
-//         model.algorithm.to_string(),
-//         deploy,
-//     )])
+//     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+//         Some(vec![
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // project_name
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // task
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // relation_name
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // _y_column_name
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // model_name
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // hyperparams
+//             LogicalTypeHandle::from(LogicalTypeId::Float),   // test_size
+//             LogicalTypeHandle::from(LogicalTypeId::Varchar), // test_sampling
+//             LogicalTypeHandle::from(LogicalTypeId::Boolean), // automatic_deploy
+//             LogicalTypeHandle::from(LogicalTypeId::Boolean), // materialize_snapshot
+//         ])
+//     }
+//
+//     fn return_type() -> LogicalTypeHandle {
+//         LogicalTypeHandle::from(LogicalTypeId::Varchar)
+//     }
 // }
+
+#[cfg(feature = "python")]
+fn tune(
+    project_name: &str,
+    task: Option<&str>,
+    relation_name: Option<&str>,
+    y_column_name: Option<Vec<String>>,
+    model_name: Option<&str>,
+    hyperparams: &Hyperparams,
+    test_size: f32,
+    test_sampling: Sampling,
+    automatic_deploy: Option<bool>,
+    materialize_snapshot: bool,
+) -> (String, String, String, bool) {
+    let task = task.map(Task::from_str).map(Result::unwrap);
+    let preprocess = json!({}).to_string();
+    let project = match Project::find_by_name(project_name) {
+        Some(project) => project,
+        None => Project::create(
+            project_name,
+            match task {
+                Some(task) => task,
+                None => panic!(
+                    "Project `{}` does not exist. To create a new project, provide the task.",
+                    project_name
+                ),
+            },
+        ),
+    };
+
+    if task.is_some() && task.unwrap() != project.task {
+        error!(
+            "Project `{:?}` already exists with a different task: `{:?}`. Create a new project instead.",
+            project.name, project.task
+        );
+    }
+
+    let mut snapshot = match relation_name {
+        None => {
+            let snapshot = project.last_snapshot().expect(
+                "You must pass a `relation_name` and `y_column_name` to snapshot the first time you train a model.",
+            );
+
+            info!("Using existing snapshot from {}", snapshot.snapshot_name(),);
+
+            snapshot
+        }
+
+        Some(relation_name) => {
+            info!(
+                "Snapshotting table \"{}\", this may take a little while...",
+                relation_name
+            );
+
+            let snapshot = Snapshot::create(
+                relation_name,
+                y_column_name,
+                test_size,
+                test_sampling,
+                materialize_snapshot,
+                preprocess.as_str(),
+            );
+
+            if materialize_snapshot {
+                info!(
+                    "Snapshot of table \"{}\" created and saved in {}",
+                    relation_name,
+                    snapshot.snapshot_name(),
+                );
+            }
+
+            snapshot
+        }
+    };
+
+    // algorithm will be transformers, stash the model_name in a hyperparam for v1 compatibility.
+    let mut hyperparams = hyperparams.clone();
+    hyperparams.insert(String::from("model_name"), json!(model_name));
+    hyperparams.insert(String::from("project_name"), json!(project_name));
+    let hyperparams = json!(hyperparams);
+
+    // # Default repeatable random state when possible
+    // let algorithm = Model.algorithm_from_name_and_task(algorithm, task);
+    // if "random_state" in algorithm().get_params() and "random_state" not in hyperparams:
+    //     hyperparams["random_state"] = 0
+    let model = Model::finetune(&project, &mut snapshot, hyperparams).unwrap();
+    let new_metrics: &serde_json::Value = &model.metrics.unwrap();
+    let new_metrics = new_metrics.as_object().unwrap();
+
+    let deployed_metrics = context::run(|conn| {
+        conn.query_row(
+            "
+        SELECT models.metrics
+        FROM quackml.models
+        JOIN quackml.deployments
+            ON deployments.model_id = models.id
+        JOIN quackml.projects
+            ON projects.id = deployments.project_id
+        WHERE projects.name = $1
+        ORDER by deployments.created_at DESC
+        LIMIT 1;",
+            params![project_name],
+            |row| {
+                let metrics: Option<String> = row.get(0).ok();
+                Ok(metrics)
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))
+    });
+
+    let mut deploy = true;
+    match automatic_deploy {
+        // Deploy only if metrics are better than previous model.
+        Some(true) | None => {
+            if let Ok(Some(deployed_metrics)) = deployed_metrics {
+                let deployed_metrics: serde_json::Value =
+                    serde_json::from_str(&deployed_metrics).unwrap();
+
+                let deployed_value = deployed_metrics
+                    .get(&project.task.default_target_metric())
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
+
+                // Get the value for the default target metric from new_metrics or provide a default value
+                let new_value = new_metrics
+                    .get(&project.task.default_target_metric())
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or_default(); // Default to 0.0 if the key is not present or conversion fails
+
+                if project.task.value_is_better(deployed_value, new_value) {
+                    deploy = false;
+                }
+            }
+        }
+
+        Some(false) => deploy = false,
+    };
+
+    if deploy {
+        project.deploy(model.id, Strategy::new_score);
+    }
+
+    (
+        project.name,
+        project.task.to_string(),
+        model.algorithm.to_string(),
+        deploy,
+    )
+}
 //
 // #[cfg(feature = "python")]
 // #[pg_extern(name = "sklearn_f1_score")]
@@ -1608,35 +2320,35 @@ pub fn transform_string(
 // pub fn dump_all(path: &str) {
 //     let p = std::path::Path::new(path).join("projects.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.projects TO '{}' CSV HEADER",
+//         "COPY quackml.projects TO '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("snapshots.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.snapshots TO '{}' CSV HEADER",
+//         "COPY quackml.snapshots TO '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("models.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.models TO '{}' CSV HEADER",
+//         "COPY quackml.models TO '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("files.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.files TO '{}' CSV HEADER",
+//         "COPY quackml.files TO '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("deployments.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.deployments TO '{}' CSV HEADER",
+//         "COPY quackml.deployments TO '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
@@ -1645,35 +2357,35 @@ pub fn transform_string(
 // pub fn load_all(path: &str) {
 //     let p = std::path::Path::new(path).join("projects.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.projects FROM '{}' CSV HEADER",
+//         "COPY quackml.projects FROM '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("snapshots.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.snapshots FROM '{}' CSV HEADER",
+//         "COPY quackml.snapshots FROM '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("models.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.models FROM '{}' CSV HEADER",
+//         "COPY quackml.models FROM '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("files.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.files FROM '{}' CSV HEADER",
+//         "COPY quackml.files FROM '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
 //
 //     let p = std::path::Path::new(path).join("deployments.csv");
 //     Spi::run(&format!(
-//         "COPY pgml.deployments FROM '{}' CSV HEADER",
+//         "COPY quackml.deployments FROM '{}' CSV HEADER",
 //         p.to_str().unwrap()
 //     ))
 //     .unwrap();
@@ -1692,7 +2404,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_intro_translation() {
-//         let sql = "SELECT pgml.transform(
+//         let sql = "SELECT quackml.transform(
 //             'translation_en_to_fr',
 //             inputs => ARRAY[
 //                 'Welcome to the future!',
@@ -1710,7 +2422,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_intro_sentiment_analysis() {
-//         let sql = "SELECT pgml.transform(
+//         let sql = "SELECT quackml.transform(
 //             task   => 'text-classification',
 //             inputs => ARRAY[
 //                 'I love how amazingly simple ML has become!',
@@ -1728,7 +2440,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_sentiment_analysis_specific_model() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'I love how amazingly simple ML has become!',
 //                 'I hate doing mundane and thankless tasks. ☹️'
@@ -1748,7 +2460,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_sentiment_analysis_industry_specific_model() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'Stocks rallied and the British pound gained.',
 //                 'Stocks making the biggest moves midday: Nvidia, Palantir and more'
@@ -1768,7 +2480,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_nli() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'A soccer game with multiple males playing. Some men are playing a sport.'
 //             ],
@@ -1786,7 +2498,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_qnli() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'Where is the capital of France?, Paris is the capital of France.'
 //             ],
@@ -1804,7 +2516,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_qqp() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'Which city is the capital of France?, Where is the capital of France?'
 //             ],
@@ -1822,7 +2534,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_grammatical_correctness() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'I will walk to home when I went through the bus.'
 //             ],
@@ -1840,7 +2552,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_zeroshot_classification() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'I have a problem with my iphone that needs to be resolved asap!!'
 //             ],
@@ -1866,7 +2578,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_token_classification_ner() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             inputs => ARRAY[
 //                 'I am Omar and I live in New York City.'
 //             ],
@@ -1885,7 +2597,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_token_classification_pos() {
-//         let sql = r#"select pgml.transform(
+//         let sql = r#"select quackml.transform(
 //             inputs => array [
 //             'I live in Amsterdam.'
 //             ],
@@ -1907,7 +2619,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_translation() {
-//         let sql = r#"select pgml.transform(
+//         let sql = r#"select quackml.transform(
 //             inputs => array[
 //                         'How are you?'
 //             ],
@@ -1925,7 +2637,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_summarization() {
-//         let sql = r#"select pgml.transform(
+//         let sql = r#"select quackml.transform(
 //             task => '{"task": "summarization",
 //                     "model": "sshleifer/distilbart-cnn-12-6"
 //             }'::JSONB,
@@ -1943,7 +2655,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_summarization_min_max_length() {
-//         let sql = r#"select pgml.transform(
+//         let sql = r#"select quackml.transform(
 //             task => '{"task": "summarization",
 //                     "model": "sshleifer/distilbart-cnn-12-6"
 //             }'::JSONB,
@@ -1965,7 +2677,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_question_answering() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             'question-answering',
 //             inputs => ARRAY[
 //                 '{
@@ -1987,7 +2699,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => 'text-generation',
 //             inputs => ARRAY[
 //                 'Three Rings for the Elven-kings under the sky, Seven for the Dwarf-lords in their halls of stone'
@@ -2005,7 +2717,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation_specific_model() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text-generation",
 //                 "model" : "gpt2-medium"
@@ -2024,7 +2736,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation_max_length() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text-generation",
 //                 "model" : "gpt2-medium"
@@ -2046,7 +2758,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation_num_return_sequences() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text-generation",
 //                 "model" : "gpt2-medium"
@@ -2072,7 +2784,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation_beams_stopping() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text-generation",
 //                 "model" : "gpt2-medium"
@@ -2095,7 +2807,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation_temperature() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text-generation",
 //                 "model" : "gpt2-medium"
@@ -2116,7 +2828,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_generation_top_p() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text-generation",
 //                 "model" : "gpt2-medium"
@@ -2137,7 +2849,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_text_text_generation() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "text2text-generation"
 //             }'::JSONB,
@@ -2155,7 +2867,7 @@ pub fn transform_string(
 //     #[pg_test]
 //     #[ignore = "requires model download"]
 //     fn readme_nlp_fill_mask() {
-//         let sql = r#"SELECT pgml.transform(
+//         let sql = r#"SELECT quackml.transform(
 //             task => '{
 //                 "task" : "fill-mask"
 //             }'::JSONB,
@@ -2196,7 +2908,7 @@ pub fn transform_string(
 //         load_diabetes(Some(25));
 //
 //         let snapshot = Snapshot::create(
-//             "pgml.diabetes",
+//             "quackml.diabetes",
 //             Some(vec!["target".to_string()]),
 //             0.5,
 //             Sampling::last,
@@ -2228,7 +2940,7 @@ pub fn transform_string(
 //     fn test_train_regression() {
 //         load_diabetes(None);
 //
-//         // Modify postgresql.conf and add shared_preload_libraries = 'pgml'
+//         // Modify postgresql.conf and add shared_preload_libraries = 'quackml'
 //         // to test deployments.
 //         let setting =
 //             Spi::get_one::<String>("select setting from pg_settings where name = 'data_directory'")
@@ -2240,7 +2952,7 @@ pub fn transform_string(
 //             let result: Vec<(String, String, String, bool)> = train(
 //                 "Test project",
 //                 Some(&Task::regression.to_string()),
-//                 Some("pgml.diabetes"),
+//                 Some("quackml.diabetes"),
 //                 Some("target"),
 //                 Algorithm::linear,
 //                 JsonB(serde_json::Value::Object(Hyperparams::new())),
@@ -2268,7 +2980,7 @@ pub fn transform_string(
 //     fn test_train_multiclass_classification() {
 //         load_digits(None);
 //
-//         // Modify postgresql.conf and add shared_preload_libraries = 'pgml'
+//         // Modify postgresql.conf and add shared_preload_libraries = 'quackml'
 //         // to test deployments.
 //         let setting =
 //             Spi::get_one::<String>("select setting from pg_settings where name = 'data_directory'")
@@ -2280,7 +2992,7 @@ pub fn transform_string(
 //             let result: Vec<(String, String, String, bool)> = train(
 //                 "Test project 2",
 //                 Some(&Task::classification.to_string()),
-//                 Some("pgml.digits"),
+//                 Some("quackml.digits"),
 //                 Some("target"),
 //                 Algorithm::xgboost,
 //                 JsonB(serde_json::Value::Object(Hyperparams::new())),
@@ -2308,7 +3020,7 @@ pub fn transform_string(
 //     fn test_train_binary_classification() {
 //         load_breast_cancer(None);
 //
-//         // Modify postgresql.conf and add shared_preload_libraries = 'pgml'
+//         // Modify postgresql.conf and add shared_preload_libraries = 'quackml'
 //         // to test deployments.
 //         let setting =
 //             Spi::get_one::<String>("select setting from pg_settings where name = 'data_directory'")
@@ -2320,7 +3032,7 @@ pub fn transform_string(
 //             let result: Vec<(String, String, String, bool)> = train(
 //                 "Test project 3",
 //                 Some(&Task::classification.to_string()),
-//                 Some("pgml.breast_cancer"),
+//                 Some("quackml.breast_cancer"),
 //                 Some("malignant"),
 //                 Algorithm::xgboost,
 //                 JsonB(serde_json::Value::Object(Hyperparams::new())),

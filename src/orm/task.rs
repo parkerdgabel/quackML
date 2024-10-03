@@ -161,7 +161,7 @@ impl std::string::ToString for Task {
             Task::question_answering => "question-answering".to_string(),
             Task::summarization => "summarization".to_string(),
             Task::translation => "translation".to_string(),
-            Task::text_classification => "text-classification".to_string(),
+            Task::text_classification => "text_classification".to_string(),
             Task::text_generation => "text-generation".to_string(),
             Task::text2text => "text2text".to_string(),
             Task::embedding => "embedding".to_string(),

@@ -519,15 +519,14 @@ impl Snapshot {
             params![schema_name, table_name],
             |row| -> Result<Column, duckdb::Error> {
                 let name = row.get::<_, String>(0).unwrap();
-                let mut duckdb_type = row.get::<_, String>(1).unwrap();
+                let duckdb_type = row.get::<_, String>(1).unwrap();
                 let position = row.get::<_, i32>(3).unwrap();
                 let position = position as usize;
                 let mut size = 1;
                 let mut array = false;
-                if duckdb_type.starts_with('_') {
+                if duckdb_type.contains("[]") {
                     size = 0;
                     array = true;
-                    duckdb_type = duckdb_type[1..].to_string() + "[]";
                 }
                 let nullable = row.get::<_, String>(2).map(|s| match s.as_str() {
                         "YES" => true,
@@ -739,16 +738,16 @@ impl Snapshot {
             None => {
                 let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
                 let table_count = conn.query_row(
-                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1 AND table_schema = 'public'",
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = $1 AND table_schema = 'main'",
                     [&table_name],
                     |row| row.get(0),
                 ).unwrap();
 
-                let panic = format!("Relation \"{}\" could not be found in the public schema. Please specify the table schema, e.g. pgml.{}", &table_name, &table_name);
+                let panic = format!("Relation \"{}\" could not be found in the main schema. Please specify the table schema, e.g. quackml.{}", &table_name, &table_name);
 
                 match table_count {
                     0 => panic!("{}", panic),
-                    1 => (String::from("public"), table_name),
+                    1 => (String::from("main"), table_name),
                     _ => panic!("{}", panic),
                 }
             }
@@ -794,6 +793,12 @@ impl Snapshot {
         }
     }
 
+    fn row_count(&self) -> usize {
+        let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
+        let sql = format!("SELECT COUNT(*) FROM {}", self.relation_name_quoted());
+        conn.query_row(&sql, [], |row| row.get(0)).unwrap()
+    }
+
     fn train_test_split(&self, num_rows: usize) -> (usize, usize) {
         let num_test_rows = if self.test_size > 1.0 {
             self.test_size as usize
@@ -819,7 +824,7 @@ impl Snapshot {
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
         let mut stmt = conn.prepare(&self.select_sql()).unwrap();
 
-        let num_rows = stmt.row_count();
+        let num_rows = self.row_count();
 
         let (num_train_rows, num_test_rows) = self.train_test_split(num_rows);
         let num_features = self.num_features();
@@ -864,8 +869,8 @@ impl Snapshot {
                 };
 
                 match column.duckdb_type.as_str() {
-                    "bpchar" | "text" | "varchar" => {
-                        match row.get::<_, Option<String>>(column.position).unwrap() {
+                    "BPCHAR" | "TEXT" | "VARCHAR" => {
+                        match row.get::<_, Option<String>>(column.position - 1).unwrap() {
                             Some(text) => vector.push(text),
                             None => panic!("NULL training text is not handled"),
                         }
@@ -1225,11 +1230,7 @@ impl Snapshot {
                             _ => panic!(
                                 "Unhandled type for categorical variable: {} {:?}",
                                 column.name, column.duckdb_type
-                            ),
-                            _ => panic!(
-                                "Unhandled type for categorical variable: {} {:?}",
-                                column.name, column.duckdb_type
-                            ),
+                            )
                         };
                         let key = key.unwrap_or_else(|_| NULL_CATEGORY_KEY.to_string());
                         if i < num_train_rows {
@@ -1262,18 +1263,30 @@ impl Snapshot {
                     // All quantitative and native types are cast directly to f32
                     None => {
                         if column.array {
-                            match column.duckdb_type.as_str() {
+                            let mut column_type = column.duckdb_type.clone();
+                            column_type.retain(|c| c != '[' && c != ']');
+                            match column_type.as_str() {
                                 // TODO handle NULL in arrays
-                                "BOOLEAN[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
+                                "BOOLEAN" => {
+                                    let vec = row.get::<_, duckdb::types::Value>(column.position - 1).unwrap();
 
+                                    let vec = flatten_value(vec);
+                                    let vec = vec.iter().map(|v| match v {
+                                        duckdb::types::Value::Boolean(b) => *b,
+                                        _ => panic!("Expected a list of booleans"),
+                                    }).collect::<Vec<bool>>();
                                     check_column_size(column, vec.len());
                                     for j in vec {
                                         vector.push(j as u8 as f32)
                                     }
                                 }
-                                "SMALLINT[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
+                                "SMALLINT" => {
+                                    let vec = row.get::<_, duckdb::types::Value>(column.position - 1).unwrap();
+                                    let vec = flatten_value(vec);
+                                    let vec = vec.iter().map(|v| match v {
+                                        duckdb::types::Value::Int(i) => *i,
+                                        _ => panic!("Expected a list of smallints"),
+                                    }).collect::<Vec<i32>>();
 
                                     check_column_size(column, vec.len());
 
@@ -1281,8 +1294,27 @@ impl Snapshot {
                                         vector.push(j as f32)
                                     }
                                 }
-                                "INTEGER[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
+                                "INTEGER" => {
+                                    let vec = row.get::<_, duckdb::types::Value>(column.position - 1).unwrap();
+
+                                    let vec = flatten_value(vec);
+                                    let vec = vec.iter().map(|v| match v {
+                                        duckdb::types::Value::Int(i) => *i,
+                                        _ => panic!("Expected a list of integers"),
+                                    }).collect::<Vec<i32>>();
+                                    check_column_size(column, vec.len());
+
+                                    for j in vec {
+                                        vector.push(j as f32)
+                                    }
+                                }
+                                "BIGINT" => {
+                                    let vec = row.get::<_, duckdb::types::Value>(column.position - 1).unwrap();
+                                    let vec = flatten_value(vec);
+                                    let vec = vec.iter().map(|v| match v {
+                                        duckdb::types::Value::BigInt(i) => *i,
+                                        _ => panic!("Expected a list of bigints"),
+                                    }).collect::<Vec<i64>>();
 
                                     check_column_size(column, vec.len());
 
@@ -1290,17 +1322,13 @@ impl Snapshot {
                                         vector.push(j as f32)
                                     }
                                 }
-                                "BIGINT[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
-
-                                    check_column_size(column, vec.len());
-
-                                    for j in vec {
-                                        vector.push(j as f32)
-                                    }
-                                }
-                                "REAL[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
+                                "REAL" => {
+                                    let vec = row.get::<_, duckdb::types::Value>(column.position - 1).unwrap();
+                                    let vec = flatten_value(vec);
+                                    let vec = vec.iter().map(|v| match v {
+                                        duckdb::types::Value::Float(f) => *f,
+                                        _ => panic!("Expected a list of reals"),
+                                    }).collect::<Vec<f32>>();
 
                                     check_column_size(column, vec.len());
 
@@ -1308,15 +1336,20 @@ impl Snapshot {
                                         vector.push(j.into())
                                     }
                                 }
-                                "DOUBLE[]" => {
-                                    let vec = row.get::<_, Vec<_>>(column.position - 1).unwrap();
+                                "DOUBLE" => {
+                                    let vec = row.get::<_, duckdb::types::Value>(column.position - 1).unwrap();
+                                    let vec = flatten_value(vec);
+                                    let vec = vec.iter().map(|v| match v {
+                                        duckdb::types::Value::Double(f) => *f,
+                                        _ => panic!("Expected a list of doubles"),
+                                    }).collect::<Vec<f64>>();
 
                                     check_column_size(column, vec.len());
 
                                     for j in vec {
                                         vector.push(j as f32)
                                     }
-                                }
+                                },
                                 _ => panic!(
                                     "Unhandled type for quantitative array column: {} {:?}",
                                     column.name, column.duckdb_type
@@ -1399,5 +1432,13 @@ fn check_column_size(column: &mut Column, len: usize) {
             "Mismatched array length for feature `{}`. Expected: {} Received: {}",
             column.name, column.size, len
         );
+    }
+}
+
+fn flatten_value(value: duckdb::types::Value) -> Vec<duckdb::types::Value> {
+    match value {
+        duckdb::types::Value::Array(array) => array.into_iter().flat_map(flatten_value).collect(),
+        duckdb::types::Value::List(list) => list.into_iter().flat_map(flatten_value).collect(),
+        value => vec![value],
     }
 }

@@ -10,6 +10,7 @@ from datetime import datetime
 import datasets
 import numpy
 import orjson
+import pickle
 from rouge import Rouge
 from sacrebleu.metrics import BLEU
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -973,6 +974,30 @@ def get_transformer_by_model_id(model_id):
     else:
         raise MissingModelError
 
+def save(transformer):
+    temp_dir = "/tmp/quackml-python/"
+    
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+        
+    transformer.save_pretrained(temp_dir)
+
+    # Read bytes from each file in the directory and return as a list of byte arrays
+    serialized_model_bytes = []
+
+    for root, _, files in os.walk(temp_dir):
+        for file_name in files:
+            with open(os.path.join(root, file_name), 'rb') as f:
+                model_bytes = f.read()
+                # Split into chunks if necessary (e.g., 100 MB)
+                chunk_size = 100_000_000
+                for i in range(0, len(model_bytes), chunk_size):
+                    serialized_model_bytes.append(model_bytes[i:i + chunk_size])
+
+    os.remove(temp_dir)
+    return serialized_model_bytes
+
+
 
 def load_model(model_id, task, dir):
     if task == "summarization":
@@ -980,7 +1005,7 @@ def load_model(model_id, task, dir):
             "tokenizer": AutoTokenizer.from_pretrained(dir),
             "model": AutoModelForSeq2SeqLM.from_pretrained(dir),
         }
-    elif task == "text-classification":
+    elif task == "text_classification":
         __cache_transformer_by_model_id[model_id] = {
             "tokenizer": AutoTokenizer.from_pretrained(dir),
             "model": AutoModelForSequenceClassification.from_pretrained(dir),
@@ -1004,6 +1029,52 @@ def load_model(model_id, task, dir):
     else:
         raise Exception(f"unhandled task type: {task}")
 
+
+def predict(model_id, data):
+    result = get_transformer_by_model_id(model_id)
+    tokenizer = result["tokenizer"]
+    model = result["model"]
+    all_preds = []
+    batch_size = 1  # TODO hyperparams
+    batches = int(math.ceil(len(data) / batch_size))
+    with torch.no_grad():
+        for i in range(batches):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, len(data))
+            tokens = tokenizer.batch_encode_plus(
+                data[start:end],
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                return_token_type_ids=False,
+            ).to(model.device)
+            predictions = model(**tokens)
+            preds = torch.argmax(predictions.logits, dim=-1)
+            all_preds.extend(preds)
+    return all_preds
+
+def predict_proba(model_id, data):
+    result = get_transformer_by_model_id(model_id)
+    tokenizer = result["tokenizer"]
+    model = result["model"]
+    all_preds = []
+    batch_size = 1  # TODO hyperparams
+    batches = int(math.ceil(len(data) / batch_size))
+    with torch.no_grad():
+        for i in range(batches):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, len(data))
+            tokens = tokenizer.batch_encode_plus(
+                data[start:end],
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                return_token_type_ids=False,
+            ).to(model.device)
+            predictions = model(**tokens)
+            preds = torch.nn.functional.softmax(predictions.logits, dim=-1)
+            all_preds.append(preds)
+    return all_preds
 
 def generate(model_id, data, config):
     result = get_transformer_by_model_id(model_id)
@@ -1096,7 +1167,8 @@ class FineTuningBase:
 
         if "project_name" in hyperparameters:
             project_name = "_".join(hyperparameters.pop("project_name").split())
-            self.training_args["hub_model_id"] = project_name
+            if self.training_args:
+                self.training_args["hub_model_id"] = project_name
 
         if "load_in_8bit" in hyperparameters:
             self.load_in_8bit = hyperparameters.pop("load_in_8bit")
