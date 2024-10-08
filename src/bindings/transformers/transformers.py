@@ -10,6 +10,7 @@ from datetime import datetime
 import datasets
 import numpy
 import orjson
+import platform
 import pickle
 from rouge import Rouge
 from sacrebleu.metrics import BLEU
@@ -128,6 +129,8 @@ def ensure_device(kwargs):
     if device is None and device_map is None:
         if torch.cuda.is_available():
             kwargs["device"] = "cuda:" + str(os.getpid() % torch.cuda.device_count())
+        elif platform.system() == "Darwin" and torch.backends.mps.is_available():
+            kwargs["device"] = "mps"
         else:
             kwargs["device"] = "cpu"
 
@@ -1002,6 +1005,7 @@ def save(transformer):
 
 
 def load_model(model_id, task, dir):
+    print(f"loading model {model_id} from {dir}")
     if task == "summarization":
         __cache_transformer_by_model_id[model_id] = {
             "tokenizer": AutoTokenizer.from_pretrained(dir),
