@@ -77,6 +77,7 @@ impl Dataset {
 pub enum TextDatasetType {
     TextClassification(TextClassificationDataset),
     TextPairClassification(TextPairClassificationDataset),
+    TextSummarization(TextSummarizationDataset),
     Conversation(ConversationDataset),
 }
 
@@ -85,8 +86,30 @@ impl TextDatasetType {
         match self {
             TextDatasetType::TextClassification(dataset) => dataset.num_features,
             TextDatasetType::TextPairClassification(dataset) => dataset.num_features,
+            TextDatasetType::TextSummarization(dataset) => dataset.num_features,
             TextDatasetType::Conversation(dataset) => dataset.num_features,
         }
+    }
+}
+
+pub struct TextSummarizationDataset {
+    pub text_train: Vec<String>,
+    pub summary_train: Vec<String>,
+    pub text_test: Vec<String>,
+    pub summary_test: Vec<String>,
+    pub num_features: usize,
+    pub num_rows: usize,
+    pub num_train_rows: usize,
+    pub num_test_rows: usize,
+}
+
+impl Display for TextSummarizationDataset {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            f,
+            "TextSummarizationDataset {{ num_rows: {}, num_train_rows: {}, num_test_rows: {} }}",
+            self.num_rows, self.num_train_rows, self.num_test_rows,
+        )
     }
 }
 

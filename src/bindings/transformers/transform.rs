@@ -53,7 +53,6 @@ pub fn transform<T: serde::Serialize>(
     let inputs = serde_json::to_string(&inputs)?;
 
     let results = Python::with_gil(|py| -> Result<String> {
-        let transform: Py<PyAny> = get_module!(PY_MODULE)
             .getattr(py, "transform")
             .format_traceback(py)?;
 

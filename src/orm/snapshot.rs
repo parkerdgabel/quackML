@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use std::fmt::{Display, Error, Formatter};
 use std::str::FromStr;
 
+use super::dataset::TextSummarizationDataset;
 use super::ConversationDataset;
 use super::Dataset;
 use super::TextPairClassificationDataset;
@@ -1069,6 +1070,76 @@ impl Snapshot {
             system_test,
             user_test,
             assistant_test,
+            num_features,
+            num_rows,
+            num_test_rows,
+            num_train_rows,
+        }
+    }
+
+    pub fn text_summarization_dataset(&mut self, dataset_args: &Value) -> TextSummarizationDataset {
+        let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
+        let mut stmt = conn.prepare(&self.select_sql()).unwrap();
+        let num_rows = self.row_count();
+        let (num_train_rows, num_test_rows) = self.train_test_split(num_rows);
+        let num_features = 1;
+
+        let mut text_train: Vec<String> = Vec::with_capacity(num_train_rows);
+        let mut summary_train: Vec<String> = Vec::with_capacity(num_train_rows);
+        let mut text_test: Vec<String> = Vec::with_capacity(num_test_rows);
+        let mut summary_test: Vec<String> = Vec::with_capacity(num_test_rows);
+
+        let text_column_value = dataset_args
+            .get("text_column")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "text".to_string());
+
+        let summary_column_value = dataset_args
+            .get("summary_column")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "summary".to_string());
+
+        let mut rows = stmt.query([]).unwrap();
+        let mut i = 0;
+        while let Some(row) = rows.next().unwrap() {
+            let row = row;
+            for column in &mut self.columns {
+                let vector = if column.name == text_column_value {
+                    if i < num_train_rows {
+                        &mut text_train
+                    } else {
+                        &mut text_test
+                    }
+                } else if column.name == summary_column_value {
+                    if i < num_train_rows {
+                        &mut summary_train
+                    } else {
+                        &mut summary_test
+                    }
+                } else {
+                    continue;
+                };
+
+                match column.duckdb_type.as_str() {
+                    "BPCHAR" | "TEXT" | "VARCHAR" => {
+                        match row.get::<_, Option<String>>(column.position - 1).unwrap() {
+                            Some(text) => vector.push(text),
+                            None => panic!("NULL training text is not handled"),
+                        }
+                    }
+                    _ => panic!("only text type columns are supported"),
+                }
+            }
+            i += 1;
+        }
+
+        TextSummarizationDataset {
+            text_train,
+            summary_train,
+            text_test,
+            summary_test,
             num_features,
             num_rows,
             num_test_rows,

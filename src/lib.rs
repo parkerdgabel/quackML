@@ -25,7 +25,7 @@ use orm::load_datasets;
 
 // Exposes a extern C function named "quackml_ext_init" in the compiled dynamic library,
 // the "entrypoint" that duckdb will use to load the extension.
-#[duckdb_entrypoint_c_api(ext_name = "quack_ml", min_duckdb_version = "v0.0.2")]
+#[duckdb_entrypoint_c_api(ext_name = "quack_ml", min_duckdb_version = "v0.0.1")]
 pub fn quack_ml_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     // TODO: This has to do with unsupported Capi version. Fix in libduckdb-sys
     // Define the struct to hold the connection

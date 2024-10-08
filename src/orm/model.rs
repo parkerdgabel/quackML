@@ -135,7 +135,10 @@ impl Model {
             )
         } else if project.task == Task::conversation {
             TextDatasetType::Conversation(snapshot.conversation_dataset(&dataset_args))
-        } else {
+        } else if project.task == Task::summarization {
+            TextDatasetType::TextSummarization(snapshot.text_summarization_dataset(&dataset_args))
+        } 
+        else {
             return Err(anyhow!("Unsupported task for finetuning"));
         };
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
@@ -204,6 +207,17 @@ impl Model {
                 model.id,
             )
             .expect("Failed to finetune conversation model"),
+            TextDatasetType::TextSummarization(dataset) => {
+                transformers::finetune_text_summarization(
+                    &project.task,
+                    dataset,
+                    &model.hyperparams,
+                    &path,
+                    project.id,
+                    model.id,
+                )
+                    .expect("Failed to finetune text summarization model")
+            },
         };
 
         model.metrics = Some(json!(metrics));
