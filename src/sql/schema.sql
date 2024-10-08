@@ -35,11 +35,11 @@ CREATE TYPE strategy AS ENUM (
     'specific'
 );
 
-CREATE TYPE STATUS AS ENUM (
+CREATE TYPE status AS ENUM (
 		'pending',
-'in_progress',
+    'in_progress',
 		'running',
-		'completed',
+		'sucessful',
 		'failed'
 );
 
@@ -83,18 +83,17 @@ CREATE TABLE IF NOT EXISTS quackml.models(
 	snapshot_id BIGINT REFERENCES quackml.snapshots(id),
 	num_features INT NOT NULL,
 	algorithm TEXT NOT NULL,
-	hyperparams TEXT NOT NULL,
+	hyperparams JSON NOT NULL,
 	status TEXT NOT NULL,
-	metrics TEXT,
-	search TEXT,
-	search_params TEXT NOT NULL,
-	search_args TEXT NOT NULL,
+	metrics JSON,
+	search JSON,
+	search_params JSON NOT NULL,
+	search_args JSON NOT NULL,
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp()
 );
-
-CREATE INDEX IF NOT EXISTS models_project_id_idx ON quackml.models(project_id);
-CREATE INDEX IF NOT EXISTS models_snapshot_id_idx ON quackml.models(snapshot_id);
+-- CREATE INDEX IF NOT EXISTS models_project_id_idx ON quackml.models(project_id);
+-- CREATE INDEX IF NOT EXISTS models_snapshot_id_idx ON quackml.models(snapshot_id);
 
 ---
 --- Deployments determine which model is live
@@ -111,6 +110,20 @@ CREATE INDEX IF NOT EXISTS deployments_project_id_created_at_idx ON quackml.depl
 CREATE INDEX IF NOT EXISTS deployments_model_id_created_at_idx ON quackml.deployments(model_id);
 
 ---
+--- Model Logs for tracking model performance
+---
+CREATE SEQUENCE IF NOT EXISTS quackml.model_logs_id_seq START 1;
+CREATE TABLE IF NOT EXISTS quackml.logs(
+    id BIGINT PRIMARY KEY DEFAULT nextval('quackml.model_logs_id_seq'),
+    model_id BIGINT NOT NULL REFERENCES quackml.models(id),
+    project_id BIGINT NOT NULL REFERENCES quackml.projects(id),
+    logs JSON NOT NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
+    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp()
+);
+CREATE INDEX IF NOT EXISTS logs_model_id_idx ON quackml.logs(model_id);
+
+---
 --- Distribute serialized models consistently for HA
 ---
 CREATE SEQUENCE IF NOT EXISTS quackml.files_id_seq START 1;
@@ -125,6 +138,7 @@ CREATE TABLE IF NOT EXISTS quackml.files(
 );
 CREATE UNIQUE INDEX IF NOT EXISTS files_model_id_path_part_idx ON quackml.files(model_id, path, part);
 
+-- 1. Overview View
 ---
 --- Quick status check on the system.
 ---

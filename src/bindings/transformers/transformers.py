@@ -10,6 +10,8 @@ from datetime import datetime
 import datasets
 import numpy
 import orjson
+import platform
+import pickle
 from rouge import Rouge
 from sacrebleu.metrics import BLEU
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -41,6 +43,8 @@ from transformers import (
     PegasusTokenizer,
     TrainingArguments,
     Trainer,
+    Seq2SeqTrainingArguments,
+    Seq2SeqTrainer,
     GPTQConfig,
     PegasusForConditionalGeneration,
     PegasusTokenizer,
@@ -125,6 +129,8 @@ def ensure_device(kwargs):
     if device is None and device_map is None:
         if torch.cuda.is_available():
             kwargs["device"] = "cuda:" + str(os.getpid() % torch.cuda.device_count())
+        elif platform.system() == "Darwin" and torch.backends.mps.is_available():
+            kwargs["device"] = "mps"
         else:
             kwargs["device"] = "cpu"
 
@@ -273,7 +279,7 @@ class StandardPipeline(object):
         if (
             "task" in kwargs
             and model_name is not None
-            and kwargs["task"]
+            and kwargs["task"].replace("_", "-")
             in [
                 "text-classification",
                 "question-answering",
@@ -283,7 +289,7 @@ class StandardPipeline(object):
                 "conversational",
             ]
         ):
-            self.task = kwargs.pop("task")
+            self.task = kwargs.pop("task").replace("_", "-")
             kwargs.pop("model", None)
             if self.task == "text-classification":
                 self.model = AutoModelForSequenceClassification.from_pretrained(
@@ -973,14 +979,39 @@ def get_transformer_by_model_id(model_id):
     else:
         raise MissingModelError
 
+def save(transformer):
+    temp_dir = "/tmp/quackml-python/"
+    
+    if not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
+        
+    transformer.save_pretrained(temp_dir)
+
+    # Read bytes from each file in the directory and return as a list of byte arrays
+    serialized_model_bytes = []
+
+    for root, _, files in os.walk(temp_dir):
+        for file_name in files:
+            with open(os.path.join(root, file_name), 'rb') as f:
+                model_bytes = f.read()
+                # Split into chunks if necessary (e.g., 100 MB)
+                chunk_size = 100_000_000
+                for i in range(0, len(model_bytes), chunk_size):
+                    serialized_model_bytes.append(model_bytes[i:i + chunk_size])
+
+    os.remove(temp_dir)
+    return serialized_model_bytes
+
+
 
 def load_model(model_id, task, dir):
+    print(f"loading model {model_id} from {dir}")
     if task == "summarization":
         __cache_transformer_by_model_id[model_id] = {
             "tokenizer": AutoTokenizer.from_pretrained(dir),
             "model": AutoModelForSeq2SeqLM.from_pretrained(dir),
         }
-    elif task == "text-classification":
+    elif task == "text_classification":
         __cache_transformer_by_model_id[model_id] = {
             "tokenizer": AutoTokenizer.from_pretrained(dir),
             "model": AutoModelForSequenceClassification.from_pretrained(dir),
@@ -1005,6 +1036,52 @@ def load_model(model_id, task, dir):
         raise Exception(f"unhandled task type: {task}")
 
 
+def predict(model_id, data):
+    result = get_transformer_by_model_id(model_id)
+    tokenizer = result["tokenizer"]
+    model = result["model"]
+    all_preds = []
+    batch_size = 1  # TODO hyperparams
+    batches = int(math.ceil(len(data) / batch_size))
+    with torch.no_grad():
+        for i in range(batches):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, len(data))
+            tokens = tokenizer.batch_encode_plus(
+                data[start:end],
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                return_token_type_ids=False,
+            ).to(model.device)
+            predictions = model(**tokens)
+            preds = torch.argmax(predictions.logits, dim=-1)
+            all_preds.extend(preds)
+    return all_preds
+
+def predict_proba(model_id, data):
+    result = get_transformer_by_model_id(model_id)
+    tokenizer = result["tokenizer"]
+    model = result["model"]
+    all_preds = []
+    batch_size = 1  # TODO hyperparams
+    batches = int(math.ceil(len(data) / batch_size))
+    with torch.no_grad():
+        for i in range(batches):
+            start = i * batch_size
+            end = min((i + 1) * batch_size, len(data))
+            tokens = tokenizer.batch_encode_plus(
+                data[start:end],
+                padding=True,
+                truncation=True,
+                return_tensors="pt",
+                return_token_type_ids=False,
+            ).to(model.device)
+            predictions = model(**tokens)
+            preds = torch.nn.functional.softmax(predictions.logits, dim=-1)
+            all_preds.append(preds)
+    return all_preds
+
 def generate(model_id, data, config):
     result = get_transformer_by_model_id(model_id)
     tokenizer = result["tokenizer"]
@@ -1012,7 +1089,7 @@ def generate(model_id, data, config):
     config = orjson.loads(config)
     all_preds = []
 
-    batch_size = 1  # TODO hyperparams
+    batch_size = 1 if "batch_size" not in config else config.pop("batch_size")
     batches = int(math.ceil(len(data) / batch_size))
 
     with torch.no_grad():
@@ -1039,7 +1116,7 @@ def generate(model_id, data, config):
 #######################
 
 
-class PGMLCallback(TrainerCallback):
+class QuackMLCallback(TrainerCallback):
     "A callback that prints a message at the beginning of training"
 
     def __init__(self, project_id, model_id):
@@ -1096,7 +1173,8 @@ class FineTuningBase:
 
         if "project_name" in hyperparameters:
             project_name = "_".join(hyperparameters.pop("project_name").split())
-            self.training_args["hub_model_id"] = project_name
+            if self.training_args:
+                self.training_args["hub_model_id"] = project_name
 
         if "load_in_8bit" in hyperparameters:
             self.load_in_8bit = hyperparameters.pop("load_in_8bit")
@@ -1140,7 +1218,7 @@ class FineTuningBase:
             f"Percentage of trainable model parameters: {100 * trainable_model_params / all_model_params:.2f}%",
         )
 
-    def tokenize_function(self):
+    def tokenize_function(self, example):
         pass
 
     def prepare_tokenized_datasets(self):
@@ -1221,7 +1299,7 @@ class FineTuningTextClassification(FineTuningBase):
             tokenized_example (dict): The tokenized example.
 
         """
-        if self.tokenizer_args:
+        if self.tokenizer_args is not None:
             tokenized_example = self.tokenizer(example["text"], **self.tokenizer_args)
         else:
             tokenized_example = self.tokenizer(
@@ -1287,7 +1365,7 @@ class FineTuningTextClassification(FineTuningBase):
             tokenizer=self.tokenizer,
             data_collator=data_collator,
             compute_metrics=self.compute_metrics,
-            callbacks=[PGMLCallback(self.project_id, self.model_id)],
+            callbacks=[QuackMLCallback(self.project_id, self.model_id)],
         )
 
         self.trainer.train()
@@ -1496,7 +1574,7 @@ class FineTuningConversation(FineTuningBase):
             max_seq_length=self.max_seq_length,
             packing=True,
             peft_config=LoraConfig(**self.lora_config_params),
-            callbacks=[PGMLCallback(self.project_id, self.model_id)],
+            callbacks=[QuackMLCallback(self.project_id, self.model_id)],
         )
         r_log("info", "Creating Supervised Fine Tuning trainer done. Training ... ")
 
@@ -1514,6 +1592,144 @@ class FineTuningConversation(FineTuningBase):
             for key, value in metrics.items()
             if isinstance(value, (int, float))
         }
+        return metrics
+
+
+class FineTuningSummarization(FineTuningBase):
+    def __init__(
+        self,
+        project_id: int,
+        model_id: int,
+        train_dataset: datasets.Dataset,
+        test_dataset: datasets.Dataset,
+        path: str,
+        hyperparameters: dict,
+    ) -> None:
+        """
+        Initializes a FineTuningSummarization object.
+
+        Args:
+            project_id (int): The ID of the project.
+            model_id (int): The ID of the model.
+            train_dataset (Dataset): The training dataset.
+            test_dataset (Dataset): The test dataset.
+            path (str): The path to save the model.
+            hyperparameters (dict): The hyperparameters for fine-tuning.
+
+        Returns:
+            None
+        """
+        super().__init__(
+            project_id, model_id, train_dataset, test_dataset, path, hyperparameters
+        )
+
+        # Load model
+        self.model = AutoModelForSeq2SeqLM.from_pretrained(
+            self.model_name,
+            token=self.token,
+        )
+
+        # Set max length for input and output
+        self.max_input_length = hyperparameters.get("max_input_length", 1024)
+        self.max_output_length = hyperparameters.get("max_output_length", 128)
+
+    def tokenize_function(self, example):
+        """
+        Tokenizes the input text and summary using the tokenizer specified in the class.
+
+        Args:
+            example (dict): The input example containing the text and summary to be tokenized.
+
+        Returns:
+            tokenized_example (dict): The tokenized example.
+        """
+        inputs = self.tokenizer(example["text"], max_length=self.max_input_length, truncation=True, padding="max_length", return_tensors="pt")
+        outputs = self.tokenizer(example["summary"], max_length=self.max_output_length, truncation=True, padding="max_length", return_tensors="pt")
+        
+        return {
+            "input_ids": inputs.input_ids,
+            "attention_mask": inputs.attention_mask,
+            "labels": outputs.input_ids,
+        }
+
+    def prepare_tokenized_datasets(self):
+        """
+        Tokenizes the train and test datasets using the provided tokenize_function.
+
+        Returns:
+            None
+        """
+        self.train_dataset = self.train_dataset.map(self.tokenize_function, batched=True)
+        self.test_dataset = self.test_dataset.map(self.tokenize_function, batched=True)
+
+    def compute_metrics(self, eval_pred):
+        """
+        Compute the ROUGE scores for evaluating model performance.
+
+        Args:
+            eval_pred (tuple): A tuple containing the predictions and labels.
+
+        Returns:
+            dict: A dictionary containing the computed ROUGE scores.
+        """
+        predictions, labels = eval_pred
+        decoded_preds = self.tokenizer.batch_decode(predictions, skip_special_tokens=True)
+        labels = numpy.where(labels != -100, labels, self.tokenizer.pad_token_id)
+        decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        rouge_scorer = Rouge()
+        scores = rouge_scorer.get_scores(decoded_preds, decoded_labels, avg=True)
+
+        return {
+            "rouge1_f1": scores["rouge-1"]["f"],
+            "rouge2_f1": scores["rouge-2"]["f"],
+            "rougeL_f1": scores["rouge-l"]["f"],
+        }
+
+    def train(self):
+        """
+        Trains the model using the specified training arguments, datasets, tokenizer, and data collator.
+        Saves the trained model after training.
+        """
+        training_args = Seq2SeqTrainingArguments(
+            output_dir=self.path,
+            logging_dir=self.path,
+            **self.training_args
+        )
+
+        data_collator = DataCollatorForSeq2Seq(self.tokenizer, model=self.model)
+        print("Test Dataset: ", self.test_dataset)
+
+        self.trainer = Seq2SeqTrainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=self.train_dataset,
+            eval_dataset=self.test_dataset,
+            tokenizer=self.tokenizer,
+            data_collator=data_collator,
+            compute_metrics=self.compute_metrics,
+            callbacks=[QuackMLCallback(self.project_id, self.model_id)],
+        )
+
+        self.trainer.train()
+        self.trainer.save_model()
+
+    def evaluate(self):
+        """
+        Evaluate the performance of the model on the evaluation dataset.
+
+        Returns:
+            metrics (dict): A dictionary containing the evaluation metrics.
+        """
+        metrics = self.trainer.evaluate()
+
+        # Update the keys to match hardcoded metrics in Task definition
+        metrics = {
+            key.replace("eval_", ""): value
+            for key, value in metrics.items()
+            if isinstance(value, (int, float))
+        }
+
         return metrics
 
 
@@ -1637,6 +1853,51 @@ def finetune_conversation(
     finetuner = FineTuningConversation(
         project_id, model_id, train_dataset, test_dataset, path, hyperparams
     )
+
+    finetuner.train()
+
+    metrics = finetuner.evaluate()
+
+    return metrics
+
+
+def finetune_text_summarization(
+    task,
+    hyperparams,
+    path,
+    text_train,
+    text_test,
+    summary_train,
+    summary_test,
+    project_id,
+    model_id,
+):
+    hyperparams = orjson.loads(hyperparams)
+
+    # Prepare dataset
+    train_dataset = datasets.Dataset.from_dict(
+        {
+            "text": text_train,
+            "summary": summary_train,
+        }
+    )
+    test_dataset = datasets.Dataset.from_dict(
+        {
+            "text": text_test,
+            "summary": summary_test,
+        }
+    )
+
+    finetuner = FineTuningSummarization(
+        project_id=project_id,
+        model_id=model_id,
+        train_dataset=train_dataset,
+        test_dataset=test_dataset,
+        path=path,
+        hyperparameters=hyperparams,
+    )
+
+    finetuner.prepare_tokenized_datasets()
 
     finetuner.train()
 

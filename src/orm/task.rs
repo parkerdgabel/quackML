@@ -158,14 +158,14 @@ impl std::string::ToString for Task {
             Task::classification => "classification".to_string(),
             Task::decomposition => "decomposition".to_string(),
             Task::clustering => "clustering".to_string(),
-            Task::question_answering => "question-answering".to_string(),
+            Task::question_answering => "question_answering".to_string(),
             Task::summarization => "summarization".to_string(),
             Task::translation => "translation".to_string(),
-            Task::text_classification => "text-classification".to_string(),
-            Task::text_generation => "text-generation".to_string(),
+            Task::text_classification => "text_classification".to_string(),
+            Task::text_generation => "text_generation".to_string(),
             Task::text2text => "text2text".to_string(),
             Task::embedding => "embedding".to_string(),
-            Task::text_pair_classification => "text-pair-classification".to_string(),
+            Task::text_pair_classification => "text_pair_classification".to_string(),
             Task::conversation => "conversation".to_string(),
         }
     }

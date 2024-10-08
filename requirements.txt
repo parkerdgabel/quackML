@@ -40,6 +40,9 @@ vllm; sys_platform == 'linux' # only runs on linux
 # Embeddings
 sentence-transformers
 
+# Reinforcement Learning
+gymnasium
+
 # Ratings
 rouge
 sacrebleu

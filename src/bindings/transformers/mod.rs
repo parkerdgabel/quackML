@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -6,7 +7,7 @@ use std::{collections::HashMap, path::Path};
 use anyhow::{anyhow, bail, Context, Result};
 use duckdb::{params, params_from_iter};
 
-use super::TracebackError;
+use super::{Bindings, TracebackError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ use serde_json::Value;
 
 use crate::context::context;
 use crate::create_pymodule;
+use crate::orm::dataset::TextSummarizationDataset;
 use crate::orm::{
     ConversationDataset, Hyperparams, Task, TextClassificationDataset,
     TextPairClassificationDataset,
@@ -161,6 +163,118 @@ pub fn rank(
     })
 }
 
+pub struct TextClassifier {
+    model_id: i64,
+}
+
+impl TextClassifier {
+    pub fn from_id(id: i64) -> Result<Box<dyn Bindings>> {
+        let result = Python::with_gil(|py| -> Result<Self> {
+            let mut dir = std::path::PathBuf::from("/tmp/quackml/models");
+            dir.push(id.to_string());
+            if !dir.exists() {
+                dump_model(id, dir.clone())?;
+            }
+            let result = context::run(|conn| {
+                conn.query_row(
+                    "
+                        SELECT task::TEXT
+                        FROM quackml.projects
+                        JOIN quackml.models
+                            ON models.project_id = projects.id
+                        WHERE models.id = $1
+                        ",
+                    params![id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| anyhow!("failed to get task: {e}"))
+            });
+            let task = result.expect("failed to get task");
+            let load = get_module!(PY_MODULE).getattr(py, "load_model")?;
+            let task =
+                Task::from_str(&task).map_err(|_| anyhow!("could not make a Task from {task}"))?;
+            load.call1(py, (id, task.to_string(), dir))
+                .format_traceback(py)?;
+            return Ok(Self { model_id: id });
+        });
+        result.map(|x| Box::new(x) as Box<dyn Bindings>)
+    }
+}
+
+impl Debug for TextClassifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextClassifier").finish()
+    }
+}
+
+impl Bindings for TextClassifier {
+    fn predict(
+        &self,
+        features: &[f32],
+        _num_features: usize,
+        _num_classes: usize,
+    ) -> Result<Vec<f32>> {
+        Python::with_gil(|py| -> Result<Vec<f32>> {
+            // Convert the features into a string
+            let features = features.iter().map(|f| *f as u8).collect::<Vec<_>>();
+            let features = vec![String::from_utf8(features)?];
+            let features = PyTuple::new(py, &features);
+            let module = get_module!(PY_MODULE);
+            let predict = module.getattr(py, "predict")?;
+            log::info!("Retrieved predict function");
+            let output = predict
+                .call1(py, (self.model_id, features))
+                .format_traceback(py)?;
+            log::info!("Called predict function");
+            output.extract(py).format_traceback(py)
+        })
+    }
+
+    fn predict_proba(&self, features: &[f32], num_features: usize) -> Result<Vec<f32>> {
+        Python::with_gil(|py| -> Result<Vec<f32>> {
+            // Convert the features into a string
+            let features = features.iter().map(|f| *f as u8).collect::<Vec<_>>();
+            let module = get_module!(PY_MODULE);
+            let predict_proba = module.getattr(py, "predict_proba")?;
+            let output = predict_proba
+                .call1(py, (self.model_id, features, num_features))
+                .format_traceback(py)?;
+            output.extract(py).format_traceback(py)
+        })
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>> {
+        // Python::with_gil(|py| -> Result<Vec<u8>> {
+        //     let save = get_module!(PY_MODULE).getattr(py, "save")?;
+        //     Ok(save
+        //         .call1(py, PyTuple::new(py, [&self.transformer]))?
+        //         .extract(py)?)
+        // })
+        panic!("Not implemented")
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Box<dyn Bindings>>
+    where
+        Self: Sized,
+    {
+        // let module = get_module!(PY_MODULE);
+        // Python::with_gil(|py| -> Result<Box<dyn Bindings>> {
+        //     let load = module.getattr(py, "load")?;
+        //     let transformer = load
+        //         .call1(py, PyTuple::new(py, [bytes]))?
+        //         .extract::<Py<PyAny>>(py)?;
+        //     let predict = transformer.getattr(py, "predict")?;
+        //     let predict_proba = transformer.getattr(py, "predict_proba")?;
+        //     Ok(Box::new(TextClassifier {
+        //         transformer,
+        //         predict,
+        //         predict_proba,
+        //     }))
+        // })
+        panic!("Not implemented")
+    }
+}
+
 pub fn finetune_text_classification(
     task: &Task,
     dataset: TextClassificationDataset,
@@ -276,6 +390,43 @@ pub fn finetune_conversation(
     })
 }
 
+pub fn finetune_text_summarization(
+    task: &Task,
+    dataset: TextSummarizationDataset,
+    hyperparams: &Hyperparams,
+    path: &Path,
+    project_id: i64,
+    model_id: i64,
+) -> Result<HashMap<String, f64>> {
+    let task = task.to_string();
+    let hyperparams = serde_json::to_string(&hyperparams)?;
+
+    Python::with_gil(|py| -> Result<HashMap<String, f64>> {
+        let tune = get_module!(PY_MODULE)
+            .getattr(py, "finetune_text_summarization")
+            .format_traceback(py)?;
+        let path = path.to_string_lossy();
+        let output = tune
+            .call1(
+                py,
+                (
+                    &task,
+                    &hyperparams,
+                    path.as_ref(),
+                    dataset.text_train,
+                    dataset.text_test,
+                    dataset.summary_train,
+                    dataset.summary_test,
+                    project_id,
+                    model_id,
+                ),
+            )
+            .format_traceback(py)?;
+
+        output.extract(py).format_traceback(py)
+    })
+}
+
 pub fn generate(
     model_id: i64,
     inputs: Vec<&str>,
@@ -294,7 +445,7 @@ pub fn generate(
             Err(e) => {
                 if e.get_type(py).name()? == "MissingModelError" {
                     log::info!("Loading model into cache for connection reuse");
-                    let mut dir = std::path::PathBuf::from("/tmp/postgresml/models");
+                    let mut dir = std::path::PathBuf::from("/tmp/quackml/models");
                     dir.push(model_id.to_string());
                     if !dir.exists() {
                         dump_model(model_id, dir.clone())?;
@@ -306,9 +457,9 @@ pub fn generate(
                         FROM quackml.projects
                         JOIN quackml.models
                             ON models.project_id = projects.id
-                        WHERE models.id = $2
+                        WHERE models.id = $1
                         ",
-                            params!(model_id),
+                            params![model_id],
                             |row| row.get::<_, String>(0),
                         )
                         .map_err(|e| anyhow!("failed to get task: {e}"))
@@ -339,7 +490,7 @@ fn dump_model(model_id: i64, dir: PathBuf) -> Result<()> {
     }
     std::fs::create_dir_all(&dir).context("failed to create directory while dumping model")?;
     context::run(|conn| -> Result<()> {
-        let mut stmt = conn.prepare("SELECT path, part, data FROM pgml.files WHERE model_id = ? ORDER BY path ASC, part ASC")?;
+        let mut stmt = conn.prepare("SELECT path, part, data FROM quackml.files WHERE model_id = ? ORDER BY path ASC, part ASC")?;
         let rows = stmt.query_map(params![model_id], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -395,7 +546,7 @@ pub fn load_dataset(
             .format_traceback(py)
     })?;
 
-    let table_name = format!("pgml.\"{}\"", name);
+    let table_name = format!("quackml.\"{}\"", name);
 
     // Columns are a (name: String, values: Vec<Value>) pair
     let json: serde_json::Value = serde_json::from_str(&dataset)?;
