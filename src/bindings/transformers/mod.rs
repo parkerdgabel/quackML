@@ -26,6 +26,7 @@ pub mod whitelist;
 mod transform;
 pub use transform::*;
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 create_pymodule!("/src/bindings/transformers/transformers.py");
 
 // Need a wrapper so we can implement traits for it
@@ -37,6 +38,7 @@ impl From<Json> for Value {
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 impl FromPyObject<'_> for Json {
     fn extract(ob: &PyAny) -> PyResult<Self> {
         if ob.is_instance_of::<PyDict>() {
@@ -81,6 +83,7 @@ impl FromPyObject<'_> for Json {
     }
 }
 
+#[cfg(feature = "python")]
 pub fn get_model_from(task: &Value) -> Result<String> {
     Python::with_gil(|py| -> Result<String> {
         let get_model_from = get_module!(PY_MODULE)
@@ -93,6 +96,7 @@ pub fn get_model_from(task: &Value) -> Result<String> {
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn embed(
     transformer: &str,
     inputs: Vec<&str>,
@@ -128,6 +132,7 @@ pub struct RankResult {
     pub text: Option<String>,
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn rank(
     transformer: &str,
     query: &str,
@@ -167,6 +172,7 @@ pub struct TextClassifier {
     model_id: i64,
 }
 
+#[cfg(feature = "python")]
 impl TextClassifier {
     pub fn from_id(id: i64) -> Result<Box<dyn Bindings>> {
         let result = Python::with_gil(|py| -> Result<Self> {
@@ -201,12 +207,14 @@ impl TextClassifier {
     }
 }
 
+#[cfg(feature = "python")]
 impl Debug for TextClassifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextClassifier").finish()
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 impl Bindings for TextClassifier {
     fn predict(
         &self,
@@ -275,6 +283,7 @@ impl Bindings for TextClassifier {
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_text_classification(
     task: &Task,
     dataset: TextClassificationDataset,
@@ -312,6 +321,7 @@ pub fn finetune_text_classification(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_text_pair_classification(
     task: &Task,
     dataset: TextPairClassificationDataset,
@@ -351,6 +361,7 @@ pub fn finetune_text_pair_classification(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_conversation(
     task: &Task,
     dataset: ConversationDataset,
@@ -390,6 +401,7 @@ pub fn finetune_conversation(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_text_summarization(
     task: &Task,
     dataset: TextSummarizationDataset,
@@ -427,6 +439,7 @@ pub fn finetune_text_summarization(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn generate(
     model_id: i64,
     inputs: Vec<&str>,
@@ -516,6 +529,7 @@ fn dump_model(model_id: i64, dir: PathBuf) -> Result<()> {
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn load_dataset(
     name: &str,
     subset: Option<String>,
@@ -690,6 +704,7 @@ pub fn load_dataset(
     Ok(num_rows)
 }
 
+#[cfg(feature = "python")]
 pub fn clear_gpu_cache(memory_usage: Option<f32>) -> Result<bool> {
     Python::with_gil(|py| -> Result<bool> {
         let clear_gpu_cache: Py<PyAny> = get_module!(PY_MODULE)

@@ -295,6 +295,7 @@ impl Model {
                             _ => snapshot.num_classes(),
                         };
                         let bindings: Box<dyn Bindings> = match algorithm {
+                            #[cfg(feature = "python")]
                             Algorithm::transformers => {
                                 match project.task {
                                     Task::text_classification => {
