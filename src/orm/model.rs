@@ -174,7 +174,7 @@ impl Model {
 
         let id = model.id;
         let path = std::path::PathBuf::from(format!("/tmp/quackml/models/{id}"));
-
+        #[cfg(all(feature = "python", not(feature = "candle")))]
         let metrics: HashMap<String, f64> = match dataset {
             TextDatasetType::TextClassification(dataset) => {
                 transformers::finetune_text_classification(

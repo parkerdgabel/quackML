@@ -11,7 +11,7 @@ use std::{
 use crate::context::{init_database_context, DATABASE_CONTEXT};
 
 static SCHEMA: &str = include_str!("sql/schema.sql");
-
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use api::activate_venv;
 use api::python_version;
 use duckdb::{
@@ -32,9 +32,12 @@ pub fn quack_ml_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     init_database_context(&conn);
     run_schema_query()?;
     // load_datasets();
-    let res = activate_venv("quackml-venv");
-    println!("venv activation: {:?}", res);
-    println!("Python version: {:?}", python_version());
+    #[cfg(all(feature = "python", not(feature = "candle")))]
+    {
+        let res = activate_venv("quackml-venv");
+        println!("venv activation: {:?}", res);
+        println!("Python version: {:?}", python_version());
+    }
     conn.execute("LOAD json;", params![])
         .expect("Expected to load json extension");
     conn.register_scalar_function::<api::LoadDatasetScalar>("load_dataset")?;

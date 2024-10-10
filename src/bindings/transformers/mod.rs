@@ -1,26 +1,38 @@
+use std::any::Any;
+use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::io::Write;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::{collections::HashMap, path::Path};
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
+use super::{Bindings, TracebackError};
 use anyhow::{anyhow, bail, Context, Result};
+use candle_core::Tensor;
+use duckdb::arrow::tensor::Tensor;
 use duckdb::{params, params_from_iter};
 
-use super::{Bindings, TracebackError};
+use llama::Cache;
+use mamba::State;
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use pyo3::prelude::*;
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::context::context;
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use crate::create_pymodule;
 use crate::orm::dataset::TextSummarizationDataset;
 use crate::orm::{
     ConversationDataset, Hyperparams, Task, TextClassificationDataset,
     TextPairClassificationDataset,
 };
-
+#[cfg(all(feature = "candle", not(feature = "python")))]
+use candle_transformers::models::*;
 pub mod whitelist;
 
 mod transform;
@@ -38,6 +50,272 @@ impl From<Json> for Value {
     }
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub struct Llama<'a> {
+    pub model: &'a mut llama::Llama,
+    pub cache: &'a mut Cache,
+}
+
+impl<'a> Llama<'a> {
+    pub fn new(model: &'a mut llama::Llama, cache: &'a mut Cache) -> Self {
+        Self { model, cache }
+    }
+
+    pub fn embed(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        self.model.embed(x)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub struct Mamba<'a> {
+    pub model: &'a mut mamba::Model,
+    pub state: &'a mut State,
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl<'a> Mamba<'a> {
+    pub fn new(model: &'a mut mamba::Model, state: &'a mut State) -> Self {
+        Self { model, state }
+    }
+}
+//
+// #[cfg(all(feature = "candle", not(feature = "python")))]
+// pub enum CandleModel<'a> {
+//     Bert(&'a mut bert::BertModel),
+//     DistilBert(&'a mut distilbert::DistilBertModel),
+//     Falcon(&'a mut falcon::Falcon),
+//     Gemma(&'a mut gemma::Model),
+//     Gemma2(&'a mut gemma2::Model),
+//     Llama(Llama<'a>),
+//     Mamba(Mamba<'a>),
+//     Mistral(&'a mut mistral::Model),
+//     Mixtral(&'a mut mixtral::Model),
+//     Phi(&'a mut phi::Model),
+//     Phi3(&'a mut phi3::Model),
+//     Qwen2(&'a mut qwen2::Model),
+//     Qwen2MoE(&'a mut qwen2_moe::Model),
+//     Starcoder2(&'a mut starcoder2::Model),
+//     T5(&'a mut t5::T5ForConditionalGeneration),
+//     Yi(&'a mut yi::Model),
+// }
+//
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub struct ModelInputs {
+    pub input_ids: Tensor,
+    pub attention_mask: Option<Tensor>,
+    pub token_type_ids: Option<Tensor>,
+    pub position_ids: Option<Tensor>,
+    pub past_key_values: Option<Vec<(Tensor, Tensor)>>,
+    pub seqlen_offset: Option<usize>,
+    pub index_pos: Option<usize>,
+    pub decoder_input_ids: Option<Tensor>,
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+trait ModelForward {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor>;
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for bert::BertModel {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(
+            &inputs.input_ids,
+            &inputs.token_type_ids.as_ref().unwrap(),
+            inputs.attention_mask.as_ref(),
+        )
+        .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for distilbert::DistilBertModel {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.attention_mask.as_ref().unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for falcon::Falcon {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids).map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for gemma::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for gemma2::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for Llama<'_> {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.model
+            .forward(&inputs.input_ids, inputs.index_pos.unwrap(), self.cache)
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for Mamba<'_> {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.model
+            .forward(&inputs.input_ids, self.state)
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for mistral::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for mixtral::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for phi::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids).map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for phi3::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for qwen2::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(
+            &inputs.input_ids,
+            inputs.seqlen_offset.unwrap(),
+            inputs.attention_mask.as_ref(),
+        )
+        .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for qwen2_moe::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for starcoder2::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for t5::T5ForConditionalGeneration {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(
+            &inputs.input_ids,
+            inputs.decoder_input_ids.as_ref().unwrap(),
+        )
+        .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl ModelForward for yi::Model {
+    fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+}
+//
+// #[cfg(all(feature = "candle", not(feature = "python")))]
+// impl<'a> CandleModel<'a> {
+//     pub fn forward(&self, inputs: &ModelInputs) -> Result<Tensor> {
+//         match self {
+//             CandleModel::Bert(model) => model.forward_inputs(inputs),
+//             CandleModel::DistilBert(model) => model.forward_inputs(inputs),
+//             CandleModel::Falcon(model) => model.forward_inputs(inputs),
+//             CandleModel::Gemma(model) => model.forward_inputs(inputs),
+//             CandleModel::Gemma2(model) => model.forward_inputs(inputs),
+//             CandleModel::Llama(model) => model.forward_inputs(inputs),
+//             CandleModel::Mamba(model) => model.forward_inputs(inputs),
+//             CandleModel::Mistral(model) => model.forward_inputs(inputs),
+//             CandleModel::Mixtral(model) => model.forward_inputs(inputs),
+//             CandleModel::Phi(model) => model.forward_inputs(inputs),
+//             CandleModel::Phi3(model) => model.forward_inputs(inputs),
+//             CandleModel::Qwen2(model) => model.forward_inputs(inputs),
+//             CandleModel::Qwen2MoE(model) => model.forward_inputs(inputs),
+//             CandleModel::Starcoder2(model) => model.forward_inputs(inputs),
+//             CandleModel::T5(model) => model.forward_inputs(inputs),
+//             CandleModel::Yi(model) => model.forward_inputs(inputs),
+//         }
+//     }
+// }
+//
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub enum CandleConfig {
+    Bert(bert::Config),
+    DistilBert(distilbert::Config),
+    Falcon(falcon::Config),
+    Gemma(gemma::Config),
+    Gemma2(gemma2::Config),
+    Llama(llama::LlamaConfig),
+    Mamba(mamba::Config),
+    Mistral(mistral::Config),
+    Mixtral(mixtral::Config),
+    Phi(phi::Config),
+    Phi3(phi3::Config),
+    Qwen2(qwen2::Config),
+    Qwen2MoE(qwen2_moe::Config),
+    Starcoder2(starcoder2::Config),
+    T5(t5::Config),
+    Yi(yi::Config),
+}
+
+type ModelInput = HashMap<String, Tensor>;
+type ModelOutput = HashMap<String, Box<dyn Any>>;
+type PipelineResults = HashMap<String, Box<dyn Any>>;
+
+trait Pipeline {
+    fn forward(&self, input: &ModelInput) -> Result<&ModelOutput>;
+
+    fn preprocess(&self, prompt: &str) -> Result<&ModelInput>;
+
+    fn postprocess(&self, output: &ModelOutput) -> Result<PipelineResults>;
+
+    fn run(&self, prompt: &str) -> Result<PipelineResults> {
+        let input = self.preprocess(prompt)?;
+        let output = self.forward(input)?;
+        self.postprocess(output)
+    }
+}
 #[cfg(all(feature = "python", not(feature = "candle")))]
 impl FromPyObject<'_> for Json {
     fn extract(ob: &PyAny) -> PyResult<Self> {

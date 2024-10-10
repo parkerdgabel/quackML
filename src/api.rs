@@ -23,12 +23,12 @@ use libduckdb_sys::{
 use log::*;
 use ndarray::{AssignElem, Zip};
 
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 use serde_json::json;
 use serde_json::{Map, Value};
 
 use crate::context::context;
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 use crate::orm::*;
 
 macro_rules! unwrap_or_error {
