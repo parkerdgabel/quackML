@@ -319,13 +319,13 @@ trait Pipeline {
     }
 }
 
-type TextGenerationOptions = HashMap<String, Box<dyn Any>>;
+type PipelineOptions = HashMap<String, Box<dyn Any>>;
 trait TextGenerator {
     fn generate(
         &self,
-        prompt: &str,
+        prompt: &Tensor,
         tokenizer: &Tokenizer,
-        options: &TextGenerationOptions,
+        options: &PipelineOptions,
     ) -> Result<String>;
 }
 
@@ -340,7 +340,8 @@ struct TextGenerationPipeline<T: ModelForward> {
 
 impl<T: ModelForward> Pipeline for TextGenerationPipeline<T> {
     fn forward(&self, input: ModelInput) -> Result<ModelOutput> {
-        todo!()
+        let input_ids = input.get("input_ids").unwrap();
+        Ok(HashMap::new())
     }
 
     fn preprocess(&self, prompt: &str) -> Result<ModelInput> {
