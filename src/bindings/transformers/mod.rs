@@ -10,7 +10,8 @@ use std::{collections::HashMap, path::Path};
 #[cfg(all(feature = "python", not(feature = "candle")))]
 use super::{Bindings, TracebackError};
 use anyhow::{anyhow, bail, Context, Result};
-use candle_core::Tensor;
+use candle_core::{Device, Tensor};
+use candle_transformers::generation::LogitsProcessor;
 use duckdb::arrow::tensor::Tensor;
 use duckdb::{params, params_from_iter};
 
@@ -22,6 +23,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokenizers::Tokenizer;
 
 use crate::context::context;
 #[cfg(all(feature = "python", not(feature = "candle")))]
@@ -304,11 +306,11 @@ type ModelOutput = HashMap<String, Box<dyn Any>>;
 type PipelineResults = HashMap<String, Box<dyn Any>>;
 
 trait Pipeline {
-    fn forward(&self, input: &ModelInput) -> Result<&ModelOutput>;
+    fn forward(&self, input: ModelInput) -> Result<ModelOutput>;
 
-    fn preprocess(&self, prompt: &str) -> Result<&ModelInput>;
+    fn preprocess(&self, prompt: &str) -> Result<ModelInput>;
 
-    fn postprocess(&self, output: &ModelOutput) -> Result<PipelineResults>;
+    fn postprocess(&self, output: ModelOutput) -> Result<PipelineResults>;
 
     fn run(&self, prompt: &str) -> Result<PipelineResults> {
         let input = self.preprocess(prompt)?;
@@ -316,6 +318,73 @@ trait Pipeline {
         self.postprocess(output)
     }
 }
+
+type TextGenerationOptions = HashMap<String, Box<dyn Any>>;
+trait TextGenerator {
+    fn generate(
+        &self,
+        prompt: &str,
+        tokenizer: &Tokenizer,
+        options: &TextGenerationOptions,
+    ) -> Result<String>;
+}
+
+struct TextGenerationPipeline<T: ModelForward> {
+    model: T,
+    device: Device,
+    tokenizer: Tokenizer,
+    logits_processor: LogitsProcessor,
+    repetition_penalty: f64,
+    repeat_last_n: usize,
+}
+
+impl<T: ModelForward> Pipeline for TextGenerationPipeline<T> {
+    fn forward(&self, input: ModelInput) -> Result<ModelOutput> {
+        todo!()
+    }
+
+    fn preprocess(&self, prompt: &str) -> Result<ModelInput> {
+        let mut model_input = HashMap::new();
+        let tokens = self
+            .tokenizer
+            .encode(prompt, true)
+            .unwrap()
+            // .map_err(anyhow::Error::from)?
+            .get_ids()
+            .to_vec();
+        let len = tokens.len();
+        model_input.insert(
+            "input_ids".to_string(),
+            Tensor::from_vec(tokens, &[1, len], &self.device)?,
+        );
+        Ok(model_input)
+    }
+
+    fn postprocess(&self, output: ModelOutput) -> Result<PipelineResults> {
+        todo!()
+    }
+}
+
+impl<T: ModelForward> TextGenerationPipeline<T> {
+    fn new(
+        model: T,
+        device: Device,
+        tokenizer: Tokenizer,
+        logits_processor: LogitsProcessor,
+        repetition_penalty: f64,
+        repeat_last_n: usize,
+    ) -> Self {
+        Self {
+            model,
+            device,
+            tokenizer,
+            logits_processor,
+            repetition_penalty,
+            repeat_last_n,
+        }
+    }
+}
+
 #[cfg(all(feature = "python", not(feature = "candle")))]
 impl FromPyObject<'_> for Json {
     fn extract(ob: &PyAny) -> PyResult<Self> {
