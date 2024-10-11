@@ -319,17 +319,17 @@ trait Pipeline {
     }
 }
 
-type PipelineOptions = HashMap<String, Box<dyn Any>>;
+type TextGenerationOptions = HashMap<String, Box<dyn Any>>;
 trait TextGenerator {
     fn generate(
         &self,
-        prompt: &Tensor,
+        input_ids: &Tensor,
         tokenizer: &Tokenizer,
-        options: &PipelineOptions,
+        options: &TextGenerationOptions,
     ) -> Result<String>;
 }
 
-struct TextGenerationPipeline<T: ModelForward> {
+struct TextGenerationPipeline<T: ModelForward + TextGenerator> {
     model: T,
     device: Device,
     tokenizer: Tokenizer,
@@ -338,10 +338,19 @@ struct TextGenerationPipeline<T: ModelForward> {
     repeat_last_n: usize,
 }
 
-impl<T: ModelForward> Pipeline for TextGenerationPipeline<T> {
+impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
     fn forward(&self, input: ModelInput) -> Result<ModelOutput> {
         let input_ids = input.get("input_ids").unwrap();
-        Ok(HashMap::new())
+        let options = HashMap::new();
+        options.insert("repeat_penalty", self.repetition_penalty);
+        let tokenizer = self.tokenizer;
+        let completion = self.model.generate(input_ids, tokenizer, options);
+        let model_output = HashMap::new();
+        model_output.insert(
+            "text_generation",
+            completion
+        )
+        Ok(model_output)
     }
 
     fn preprocess(&self, prompt: &str) -> Result<ModelInput> {
@@ -366,7 +375,7 @@ impl<T: ModelForward> Pipeline for TextGenerationPipeline<T> {
     }
 }
 
-impl<T: ModelForward> TextGenerationPipeline<T> {
+impl<T: ModelForward + TextGenerator> TextGenerationPipeline<T> {
     fn new(
         model: T,
         device: Device,
