@@ -304,18 +304,25 @@ pub enum CandleConfig {
 type ModelInput = HashMap<String, Tensor>;
 type ModelOutput = HashMap<String, Box<dyn Any>>;
 type PipelineResults = HashMap<String, Box<dyn Any>>;
+type PreprocessParams = HashMap<String, Box<dyn Any>>;
+type PostprocessParams = HashMap<String, Box<dyn Any>>;
+type ForwardParams = HashMap<String, Box<dyn Any>>;
+type PipelineParams = HashMap<String, Box<dyn Any>>;
 
 trait Pipeline {
-    fn forward(&self, input: ModelInput) -> Result<ModelOutput>;
+    fn sanitize_params(&self, pipeline_params: &PipelineParams) -> (PreprocessParams, ForwardParams, PostprocessParams);
 
-    fn preprocess(&self, prompt: &str) -> Result<ModelInput>;
+    fn forward(&self, input: ModelInput, forward_params: &ForwardParams) -> Result<ModelOutput>;
 
-    fn postprocess(&self, output: ModelOutput) -> Result<PipelineResults>;
+    fn preprocess(&self, prompt: &str, preprocess_params: &PreprocessParams) -> Result<ModelInput>;
 
-    fn run(&self, prompt: &str) -> Result<PipelineResults> {
-        let input = self.preprocess(prompt)?;
-        let output = self.forward(input)?;
-        self.postprocess(output)
+    fn postprocess(&self, output: ModelOutput, postprocess_params: &PostprocessParams) -> Result<PipelineResults>;
+
+    fn run(&self, prompt: &str, pipeline_params: &PipelineParams) -> Result<PipelineResults> {
+        let (preprocess_params, forward_params, postprocess_params) = self.sanitize_params(pipeline_params);
+        let input = self.preprocess(prompt, preprocess_params)?;
+        let output = self.forward(input, forward_params)?;
+        self.postprocess(output, postprocess_params)
     }
 }
 
@@ -339,7 +346,39 @@ struct TextGenerationPipeline<T: ModelForward + TextGenerator> {
 }
 
 impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
-    fn forward(&self, input: ModelInput) -> Result<ModelOutput> {
+    fn sanitize_params(&self, pipeline_params: &PipelineParams) -> (PreprocessParams, ForwardParams, PostprocessParams) {
+        let preprocess_params = HashMap::new();
+        let add_special_tokens = pipeline_params.get("add_special_tokens").unwrap_or_else(false);
+        preprocess_params.insert(
+            "add_special_tokens",
+            add_special_tokens
+        );
+
+        if Some(padding) = pipeline_params.get("padding") {
+            preprocess_params.insert(
+                "padding",
+                padding
+            );
+        }
+
+        if Some(truncation) = pipeline_params.get("truncation") {
+            preprocess_params.insert(
+                "truncation",
+                truncation
+            );
+        }
+
+        if Some(max_length) = pipeline_params.get("max_length") {
+            preprocess_params.insert(
+                "max_length",
+                max_length
+            );
+        }
+
+
+    }
+
+    fn forward(&self, input: ModelInput, forward_params: &ForwardParams) -> Result<ModelOutput> {
         let input_ids = input.get("input_ids").unwrap();
         let options = HashMap::new();
         options.insert("repeat_penalty", self.repetition_penalty);
@@ -347,13 +386,13 @@ impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
         let completion = self.model.generate(input_ids, tokenizer, options);
         let model_output = HashMap::new();
         model_output.insert(
-            "text_generation",
+            "generated_text",
             completion
         )
         Ok(model_output)
     }
 
-    fn preprocess(&self, prompt: &str) -> Result<ModelInput> {
+    fn preprocess(&self, prompt: &str, preprocess_params: &PreprocessParams) -> Result<ModelInput> {
         let mut model_input = HashMap::new();
         let tokens = self
             .tokenizer
@@ -370,8 +409,8 @@ impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
         Ok(model_input)
     }
 
-    fn postprocess(&self, output: ModelOutput) -> Result<PipelineResults> {
-        todo!()
+    fn postprocess(&self, output: ModelOutput, postprocess_params: &PostprocessParams) -> Result<PipelineResults> {
+        output
     }
 }
 
