@@ -375,7 +375,9 @@ impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
             );
         }
 
-
+        if Some(prefix) = pipeline_params.get("prefix") {
+            let prefix_inputs = self.tokenizer.encode(prefix, add_special_tokens);
+        }
     }
 
     fn forward(&self, input: ModelInput, forward_params: &ForwardParams) -> Result<ModelOutput> {
