@@ -348,20 +348,20 @@ struct TextGenerationPipeline<T: ModelForward + TextGenerator> {
 impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
     fn sanitize_params(&self, pipeline_params: &PipelineParams) -> (PreprocessParams, ForwardParams, PostprocessParams) {
         let preprocess_params = HashMap::new();
-        let add_special_tokens = pipeline_params.get("add_special_tokens").unwrap_or_else(false);
+        let add_special_tokens = pipeline_params.remove("add_special_tokens").unwrap_or_else(false);
         preprocess_params.insert(
             "add_special_tokens",
             add_special_tokens
         );
 
-        if Some(padding) = pipeline_params.get("padding") {
+        if Some(padding) = pipeline_params.remove("padding") {
             preprocess_params.insert(
                 "padding",
                 padding
             );
         }
 
-        if Some(truncation) = pipeline_params.get("truncation") {
+        if Some(truncation) = pipeline_params.remove("truncation") {
             preprocess_params.insert(
                 "truncation",
                 truncation
@@ -377,7 +377,38 @@ impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
 
         if Some(prefix) = pipeline_params.get("prefix") {
             let prefix_inputs = self.tokenizer.encode(prefix, add_special_tokens);
+            pipeline_params.insert(
+                "prefix_length",
+                prefix_inputs.len()
+            );
         }
+
+        if Some(handle_long_generation) = pipeline_params.remove("handle_long_generation") {
+            preprocess_params.insert(
+            "handle_long_generation",
+                handle_long_generation
+            );
+        }
+
+        if Some(continue_final_message) = pipeline_params.remove("continue_final_message") {
+            preprocess_params.insert(
+                "continue_final_message",
+                continue_final_message
+            );
+        }
+
+        for (key, val) in pipeline_params.iter() {
+            preprocess_params.insert(
+                key,
+                val
+            );
+        }
+
+        let postprocess_params = HashMap::new();
+
+        let forward_params = preprocess_params.clone();
+
+        (preprocess_params, forward_params, postprocess_params)
     }
 
     fn forward(&self, input: ModelInput, forward_params: &ForwardParams) -> Result<ModelOutput> {
