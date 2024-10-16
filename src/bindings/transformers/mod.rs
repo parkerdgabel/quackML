@@ -5,14 +5,15 @@ use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 
+use super::AToAny;
 #[cfg(all(feature = "python", not(feature = "candle")))]
 use super::{Bindings, TracebackError};
 use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
-use duckdb::arrow::tensor::Tensor;
 use duckdb::{params, params_from_iter};
 
 use llama::Cache;
@@ -302,42 +303,44 @@ pub enum CandleConfig {
 }
 
 type ModelInput = HashMap<String, Tensor>;
-type ModelOutput = HashMap<String, Box<dyn Any>>;
-type PipelineResults = HashMap<String, Box<dyn Any>>;
-type PreprocessParams = HashMap<String, Box<dyn Any>>;
-type PostprocessParams = HashMap<String, Box<dyn Any>>;
-type ForwardParams = HashMap<String, Box<dyn Any>>;
-type PipelineParams = HashMap<String, Box<dyn Any>>;
+type ModelOutput = HashMap<String, Arc<dyn Any + Send + Sync>>;
+type PipelineResults = HashMap<String, Arc<dyn Any + Send + Sync>>;
 
-trait Pipeline {
-    fn sanitize_params(&self, pipeline_params: &PipelineParams) -> (PreprocessParams, ForwardParams, PostprocessParams);
+#[derive(Debug, Clone)]
+struct PipelineParams {
+    add_special_tokens: bool,
+    padding: Option<bool>,
+    truncation: Option<bool>,
+    max_length: Option<usize>,
+    prefix: Option<String>,
+    handle_long_generation: bool,
+    continue_final_message: bool,
+}
 
-    fn forward(&self, input: ModelInput, forward_params: &ForwardParams) -> Result<ModelOutput>;
-
-    fn preprocess(&self, prompt: &str, preprocess_params: &PreprocessParams) -> Result<ModelInput>;
-
-    fn postprocess(&self, output: ModelOutput, postprocess_params: &PostprocessParams) -> Result<PipelineResults>;
-
-    fn run(&self, prompt: &str, pipeline_params: &PipelineParams) -> Result<PipelineResults> {
-        let (preprocess_params, forward_params, postprocess_params) = self.sanitize_params(pipeline_params);
-        let input = self.preprocess(prompt, preprocess_params)?;
-        let output = self.forward(input, forward_params)?;
-        self.postprocess(output, postprocess_params)
+impl Default for PipelineParams {
+    fn default() -> Self {
+        Self {
+            add_special_tokens: true,
+            padding: None,
+            truncation: None,
+            max_length: None,
+            prefix: None,
+            handle_long_generation: false,
+            continue_final_message: false,
+        }
     }
 }
 
-type TextGenerationOptions = HashMap<String, Box<dyn Any>>;
-trait TextGenerator {
-    fn generate(
-        &self,
-        input_ids: &Tensor,
-        tokenizer: &Tokenizer,
-        options: &TextGenerationOptions,
-    ) -> Result<String>;
+trait Pipeline: Send + Sync {
+    fn run(&self, prompt: &str, params: &PipelineParams) -> Result<PipelineResults>;
 }
 
-struct TextGenerationPipeline<T: ModelForward + TextGenerator> {
-    model: T,
+trait TextGenerator: Send + Sync {
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String>;
+}
+
+struct TextGenerationPipeline {
+    model: Arc<dyn TextGenerator>,
     device: Device,
     tokenizer: Tokenizer,
     logits_processor: LogitsProcessor,
@@ -345,93 +348,21 @@ struct TextGenerationPipeline<T: ModelForward + TextGenerator> {
     repeat_last_n: usize,
 }
 
-impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
-    fn sanitize_params(&self, pipeline_params: &PipelineParams) -> (PreprocessParams, ForwardParams, PostprocessParams) {
-        let preprocess_params = HashMap::new();
-        let add_special_tokens = pipeline_params.remove("add_special_tokens").unwrap_or_else(false);
-        preprocess_params.insert(
-            "add_special_tokens",
-            add_special_tokens
-        );
-
-        if Some(padding) = pipeline_params.remove("padding") {
-            preprocess_params.insert(
-                "padding",
-                padding
-            );
-        }
-
-        if Some(truncation) = pipeline_params.remove("truncation") {
-            preprocess_params.insert(
-                "truncation",
-                truncation
-            );
-        }
-
-        if Some(max_length) = pipeline_params.get("max_length") {
-            preprocess_params.insert(
-                "max_length",
-                max_length
-            );
-        }
-
-        if Some(prefix) = pipeline_params.get("prefix") {
-            let prefix_inputs = self.tokenizer.encode(prefix, add_special_tokens);
-            pipeline_params.insert(
-                "prefix_length",
-                prefix_inputs.len()
-            );
-        }
-
-        if Some(handle_long_generation) = pipeline_params.remove("handle_long_generation") {
-            preprocess_params.insert(
-            "handle_long_generation",
-                handle_long_generation
-            );
-        }
-
-        if Some(continue_final_message) = pipeline_params.remove("continue_final_message") {
-            preprocess_params.insert(
-                "continue_final_message",
-                continue_final_message
-            );
-        }
-
-        for (key, val) in pipeline_params.iter() {
-            preprocess_params.insert(
-                key,
-                val
-            );
-        }
-
-        let postprocess_params = HashMap::new();
-
-        let forward_params = preprocess_params.clone();
-
-        (preprocess_params, forward_params, postprocess_params)
+impl Pipeline for TextGenerationPipeline {
+    fn run(&self, prompt: &str, params: &PipelineParams) -> Result<PipelineResults> {
+        let input = self.preprocess(prompt, params)?;
+        let output = self.forward(input)?;
+        self.postprocess(output)
     }
+}
 
-    fn forward(&self, input: ModelInput, forward_params: &ForwardParams) -> Result<ModelOutput> {
-        let input_ids = input.get("input_ids").unwrap();
-        let options = HashMap::new();
-        options.insert("repeat_penalty", self.repetition_penalty);
-        let tokenizer = self.tokenizer;
-        let completion = self.model.generate(input_ids, tokenizer, options);
-        let model_output = HashMap::new();
-        model_output.insert(
-            "generated_text",
-            completion
-        )
-        Ok(model_output)
-    }
-
-    fn preprocess(&self, prompt: &str, preprocess_params: &PreprocessParams) -> Result<ModelInput> {
+impl TextGenerationPipeline {
+    fn preprocess(&self, prompt: &str, params: &PipelineParams) -> Result<ModelInput> {
         let mut model_input = HashMap::new();
         let tokens = self
             .tokenizer
-            .encode(prompt, true)
-            .unwrap()
-            // .map_err(anyhow::Error::from)?
+            .encode(prompt, params.add_special_tokens)
+            .map_err(|e| anyhow!("Tokenization error: {}", e))?
             .get_ids()
             .to_vec();
         let len = tokens.len();
@@ -442,28 +373,84 @@ impl<T: ModelForward + TextGenerator> Pipeline for TextGenerationPipeline<T> {
         Ok(model_input)
     }
 
-    fn postprocess(&self, output: ModelOutput, postprocess_params: &PostprocessParams) -> Result<PipelineResults> {
-        output
+    fn forward(&self, input: ModelInput) -> Result<ModelOutput> {
+        let input_ids = input
+            .get("input_ids")
+            .ok_or_else(|| anyhow!("Missing input_ids in model input"))?;
+        let completion = self.model.generate(input_ids, &self.tokenizer)?;
+        let mut model_output = HashMap::new();
+        model_output.insert(
+            "generated_text".to_string(),
+            Arc::new(completion) as Arc<dyn Any + Send + Sync>,
+        );
+        Ok(model_output)
+    }
+
+    fn postprocess(&self, output: ModelOutput) -> Result<PipelineResults> {
+        Ok(output)
     }
 }
 
-impl<T: ModelForward + TextGenerator> TextGenerationPipeline<T> {
-    fn new(
-        model: T,
-        device: Device,
-        tokenizer: Tokenizer,
-        logits_processor: LogitsProcessor,
-        repetition_penalty: f64,
-        repeat_last_n: usize,
-    ) -> Self {
-        Self {
-            model,
-            device,
-            tokenizer,
-            logits_processor,
-            repetition_penalty,
-            repeat_last_n,
-        }
+impl TextGenerationPipeline {
+    fn builder() -> TextGenerationPipelineBuilder {
+        TextGenerationPipelineBuilder::default()
+    }
+}
+
+#[derive(Default)]
+struct TextGenerationPipelineBuilder {
+    model: Option<Arc<dyn TextGenerator>>,
+    device: Option<Device>,
+    tokenizer: Option<Tokenizer>,
+    logits_processor: Option<LogitsProcessor>,
+    repetition_penalty: Option<f64>,
+    repeat_last_n: Option<usize>,
+}
+
+impl TextGenerationPipelineBuilder {
+    fn model(mut self, model: Arc<dyn TextGenerator>) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    fn device(mut self, device: Device) -> Self {
+        self.device = Some(device);
+        self
+    }
+
+    fn tokenizer(mut self, tokenizer: Tokenizer) -> Self {
+        self.tokenizer = Some(tokenizer);
+        self
+    }
+
+    fn logits_processor(mut self, logits_processor: LogitsProcessor) -> Self {
+        self.logits_processor = Some(logits_processor);
+        self
+    }
+
+    fn repetition_penalty(mut self, repetition_penalty: f64) -> Self {
+        self.repetition_penalty = Some(repetition_penalty);
+        self
+    }
+
+    fn repeat_last_n(mut self, repeat_last_n: usize) -> Self {
+        self.repeat_last_n = Some(repeat_last_n);
+        self
+    }
+
+    fn build(self) -> Result<TextGenerationPipeline> {
+        Ok(TextGenerationPipeline {
+            model: self.model.ok_or_else(|| anyhow!("Model is required"))?,
+            device: self.device.ok_or_else(|| anyhow!("Device is required"))?,
+            tokenizer: self
+                .tokenizer
+                .ok_or_else(|| anyhow!("Tokenizer is required"))?,
+            logits_processor: self
+                .logits_processor
+                .ok_or_else(|| anyhow!("LogitsProcessor is required"))?,
+            repetition_penalty: self.repetition_penalty.unwrap_or(1.0),
+            repeat_last_n: self.repeat_last_n.unwrap_or(0),
+        })
     }
 }
 
