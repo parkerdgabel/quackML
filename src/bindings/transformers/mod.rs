@@ -53,6 +53,9 @@ impl From<Json> for Value {
     }
 }
 
+static MODEL_CACHE: once_cell::sync::Lazy<std::sync::Mutex<HashMap<i64, Box<dyn ModelForward>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
 #[cfg(all(feature = "candle", not(feature = "python")))]
 pub struct Llama<'a> {
     pub model: &'a mut llama::Llama,
@@ -115,7 +118,7 @@ pub struct ModelInputs {
 }
 
 #[cfg(all(feature = "candle", not(feature = "python")))]
-trait ModelForward {
+trait ModelForward: Send + Sync {
     fn forward_inputs(&mut self, inputs: &ModelInputs) -> Result<Tensor>;
 }
 
@@ -512,6 +515,23 @@ pub fn get_model_from(task: &Value) -> Result<String> {
     })
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn embed(
+    transformer: &str,
+    inputs: Vec<&str>,
+    kwargs: &serde_json::Value,
+) -> Result<Vec<Vec<f32>>> {
+    // let tokenizer_params = FromPretrainedParameters::default();
+
+    let tokenizer = Tokenizer::from_pretrained(transformer, None).map_err(|e| anyhow!("{}", e))?;
+    let outputs = tokenizer.encode_batch(inputs, false).unwrap();
+    let outputs = outputs
+        .into_iter()
+        .map(|x| x.get_ids().into_iter().map(|val| *val as f32).collect())
+        .collect();
+    Ok(outputs)
+}
+
 #[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn embed(
     transformer: &str,
@@ -855,6 +875,102 @@ pub fn finetune_text_summarization(
     })
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn generate(
+    model_id: i64,
+    inputs: Vec<&str>,
+    config: serde_json::Value,
+) -> Result<Vec<String>> {
+    let model = MODEL_CACHE.lock().unwrap().get(&model_id);
+    let model = match model {
+        Some(model) => model,
+        None => {
+            let mut dir = std::path::PathBuf::from("/tmp/quackml/models");
+            dir.push(model_id.to_string());
+            if !dir.exists() {
+                dump_model(model_id, dir.clone())?;
+            }
+            let result = context::run(|conn| {
+                conn.query_row(
+                    "
+                        SELECT task::TEXT
+                        FROM quackml.projects
+                        JOIN quackml.models
+                            ON models.project_id = projects.id
+                        WHERE models.id = $1
+                        ",
+                    params![model_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| anyhow!("failed to get task: {e}"))
+            });
+            let task = result.expect("failed to get task");
+            // let load = get_module!(PY_MODULE).getattr(py, "load_model")?;
+            // let task =
+            //     Task::from_str(&task).map_err(|_| anyhow!("could not make a Task from {task}"))?;
+            // load.call1(py, (model_id, task.to_string(), dir))
+            //     .format_traceback(py)?;
+            MODEL_CACHE.lock().unwrap().get(&model_id).unwrap()
+        }
+    };
+}
+
+fn load_model(model_id: i64, task: &str, dir: PathBuf) -> Result<Box<dyn ModelForward>> {
+    let config_reader = std::fs::File::open(dir.join("config.json"))?;
+
+    let model_type = serde_json::from_reader::<_, Value>(config_reader)?
+        .get("model_type")
+        .and_then(|x| x.as_str())
+        .unwrap();
+
+    let model = match model_type {
+        "bert" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: bert::Config = serde_json::from_reader(config_reader)?;
+            let model = bert::BertModel::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "distilbert" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: distilbert::Config = serde_json::from_reader(config_reader)?;
+            let model = distilbert::DistilBertModel::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "falcon" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: falcon::Config = serde_json::from_reader(config_reader)?;
+            let model = falcon::Falcon::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "gemma" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: gemma::Config = serde_json::from_reader(config_reader)?;
+            let model = gemma::Model::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "gemma2" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: gemma2::Config = serde_json::from_reader(config_reader)?;
+            let model = gemma2::Model::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "llama" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: llama::LlamaConfig = serde_json::from_reader(config_reader)?;
+            let model = Llama::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "mamba" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: mamba::Config = serde_json::from_reader(config_reader)?;
+            let model = Mamba::new(config);
+            Box::new(model) as Box<dyn ModelForward>
+        }
+        "mistral" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+    }
+}
+
 #[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn generate(
     model_id: i64,
@@ -943,6 +1059,16 @@ fn dump_model(model_id: i64, dir: PathBuf) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn load_dataset(
+    name: &str,
+    subset: Option<String>,
+    limit: Option<usize>,
+    kwargs: &serde_json::Value,
+) -> Result<usize> {
+    Ok(0)
 }
 
 #[cfg(all(feature = "python", not(feature = "candle")))]
@@ -1118,6 +1244,11 @@ pub fn load_dataset(
     }
 
     Ok(num_rows)
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn clear_gpu_cache(memory_usage: Option<f32>) -> Result<bool> {
+    Ok(false)
 }
 
 #[cfg(feature = "python")]

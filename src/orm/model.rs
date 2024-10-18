@@ -220,7 +220,7 @@ impl Model {
             },
         };
 
-        model.metrics = Some(json!(metrics));
+        model.metrics = Some(json!({}));
 
         let conn = unsafe { DATABASE_CONTEXT.as_ref().unwrap().get_connection() };
 
@@ -375,36 +375,61 @@ impl Model {
                 Algorithm::lightgbm => lightgbm::fit_regression,
                 Algorithm::linear => linfa::LinearRegression::fit,
                 Algorithm::svm => linfa::Svm::fit,
+                #[cfg(feature = "python")]
                 Algorithm::lasso => sklearn::lasso_regression,
+                #[cfg(feature = "python")]
                 Algorithm::elastic_net => sklearn::elastic_net_regression,
+                #[cfg(feature = "python")]
                 Algorithm::ridge => sklearn::ridge_regression,
+                #[cfg(feature = "python")]
                 Algorithm::random_forest => sklearn::random_forest_regression,
+                #[cfg(feature = "python")]
                 Algorithm::orthogonal_matching_pursuit => {
                     sklearn::orthogonal_matching_pursuit_regression
                 }
+                #[cfg(feature = "python")]
                 Algorithm::bayesian_ridge => sklearn::bayesian_ridge_regression,
+                #[cfg(feature = "python")]
                 Algorithm::automatic_relevance_determination => {
                     sklearn::automatic_relevance_determination_regression
                 }
+                #[cfg(feature = "python")]
                 Algorithm::stochastic_gradient_descent => {
                     sklearn::stochastic_gradient_descent_regression
                 }
+                #[cfg(feature = "python")]
                 Algorithm::passive_aggressive => sklearn::passive_aggressive_regression,
+                #[cfg(feature = "python")]
                 Algorithm::ransac => sklearn::ransac_regression,
+                #[cfg(feature = "python")]
                 Algorithm::theil_sen => sklearn::theil_sen_regression,
+                #[cfg(feature = "python")]
                 Algorithm::huber => sklearn::huber_regression,
+                #[cfg(feature = "python")]
                 Algorithm::quantile => sklearn::quantile_regression,
+                #[cfg(feature = "python")]
                 Algorithm::kernel_ridge => sklearn::kernel_ridge_regression,
+                #[cfg(feature = "python")]
                 Algorithm::gaussian_process => sklearn::gaussian_process_regression,
+                #[cfg(feature = "python")]
                 Algorithm::nu_svm => sklearn::nu_svm_regression,
+                #[cfg(feature = "python")]
                 Algorithm::ada_boost => sklearn::ada_boost_regression,
+                #[cfg(feature = "python")]
                 Algorithm::bagging => sklearn::bagging_regression,
+                #[cfg(feature = "python")]
                 Algorithm::extra_trees => sklearn::extra_trees_regression,
+                #[cfg(feature = "python")]
                 Algorithm::gradient_boosting_trees => sklearn::gradient_boosting_trees_regression,
+                #[cfg(feature = "python")]
                 Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_regression,
+                #[cfg(feature = "python")]
                 Algorithm::least_angle => sklearn::least_angle_regression,
+                #[cfg(feature = "python")]
                 Algorithm::lasso_least_angle => sklearn::lasso_least_angle_regression,
+                #[cfg(feature = "python")]
                 Algorithm::linear_svm => sklearn::linear_svm_regression,
+                #[cfg(feature = "python")]
                 Algorithm::catboost => sklearn::catboost_regression,
                 _ => todo!("Unsupported regression algorithm: {:?}", self.algorithm),
             },
@@ -413,35 +438,55 @@ impl Model {
                 Algorithm::lightgbm => lightgbm::fit_classification,
                 Algorithm::linear => linfa::LogisticRegression::fit,
                 Algorithm::svm => linfa::Svm::fit,
+                #[cfg(feature = "python")]
                 Algorithm::ridge => sklearn::ridge_classification,
+                #[cfg(feature = "python")]
                 Algorithm::random_forest => sklearn::random_forest_classification,
+                #[cfg(feature = "python")]
                 Algorithm::stochastic_gradient_descent => {
                     sklearn::stochastic_gradient_descent_classification
                 }
+                #[cfg(feature = "python")]
                 Algorithm::perceptron => sklearn::perceptron_classification,
+                #[cfg(feature = "python")]
                 Algorithm::passive_aggressive => sklearn::passive_aggressive_classification,
+                #[cfg(feature = "python")]
                 Algorithm::gaussian_process => sklearn::gaussian_process,
+                #[cfg(feature = "python")]
                 Algorithm::nu_svm => sklearn::nu_svm_classification,
+                #[cfg(feature = "python")]
                 Algorithm::ada_boost => sklearn::ada_boost_classification,
+                #[cfg(feature = "python")]
                 Algorithm::bagging => sklearn::bagging_classification,
+                #[cfg(feature = "python")]
                 Algorithm::extra_trees => sklearn::extra_trees_classification,
+                #[cfg(feature = "python")]
                 Algorithm::gradient_boosting_trees => {
                     sklearn::gradient_boosting_trees_classification
                 }
+                #[cfg(feature = "python")]
                 Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_classification,
+                #[cfg(feature = "python")]
                 Algorithm::linear_svm => sklearn::linear_svm_classification,
+                #[cfg(feature = "python")]
                 Algorithm::catboost => sklearn::catboost_classification,
                 _ => todo!("Unsupported classification algorithm: {:?}", self.algorithm),
             },
             Task::clustering => match self.algorithm {
+                #[cfg(feature = "python")]
                 Algorithm::affinity_propagation => sklearn::affinity_propagation,
+                #[cfg(feature = "python")]
                 Algorithm::birch => sklearn::birch,
+                #[cfg(feature = "python")]
                 Algorithm::kmeans => sklearn::kmeans,
+                #[cfg(feature = "python")]
                 Algorithm::mini_batch_kmeans => sklearn::mini_batch_kmeans,
+                #[cfg(feature = "python")]
                 Algorithm::mean_shift => sklearn::mean_shift,
                 _ => todo!("Unsupported clustering algorithm: {:?}", self.algorithm),
             },
             Task::decomposition => match self.algorithm {
+                #[cfg(feature = "python")]
                 Algorithm::pca => sklearn::pca,
                 _ => todo!("Unsupported decomposition algorithm: {:?}", self.algorithm),
             },

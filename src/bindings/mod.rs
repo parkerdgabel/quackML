@@ -76,6 +76,7 @@ pub mod lightgbm;
 pub mod linfa;
 #[cfg(feature = "python")]
 pub mod python;
+#[cfg(feature = "python")]
 pub mod sklearn;
 pub mod transformers;
 pub mod xgboost;
