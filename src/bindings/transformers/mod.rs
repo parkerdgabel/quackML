@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::borrow::Borrow;
 use std::fmt::Debug;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -917,6 +917,8 @@ pub fn generate(
         .device(Device::Cpu)
         .tokenizer(Tokenizer::from_pretrained("gpt2", None)?)
         .build()?;
+
+    Ok(vec![])
 }
 
 fn safetensor_paths(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -941,17 +943,17 @@ fn load_model(model_id: i64, task: &str, dir: PathBuf) -> Result<Box<dyn ModelFo
         .and_then(|x| x.as_str())
         .unwrap();
 
-    let model = match model_type {
+    match model_type {
         "bert" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: bert::Config = serde_json::from_reader(config_reader)?;
 
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), bert::DTYPE, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), bert::DTYPE, &Device::Cpu)?
             };
-            let model = bert::BertModel::load(vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = bert::BertModel::load(vb, &config)?;
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "distilbert" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
@@ -962,73 +964,80 @@ fn load_model(model_id: i64, task: &str, dir: PathBuf) -> Result<Box<dyn ModelFo
                     paths.as_slice(),
                     distilbert::DTYPE,
                     &Device::Cpu,
-                )
+                )?
             };
-            let model = distilbert::DistilBertModel::load(vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = distilbert::DistilBertModel::load(vb, &config)?;
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "falcon" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: falcon::Config = serde_json::from_reader(config_reader)?;
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
             };
-            let model = falcon::Falcon::load(vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = falcon::Falcon::load(vb, config)?;
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "gemma" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: gemma::Config = serde_json::from_reader(config_reader)?;
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
             };
-            let model = gemma::Model::new(false, vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = gemma::Model::new(false, &config, vb)?;
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "gemma2" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: gemma2::Config = serde_json::from_reader(config_reader)?;
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
             };
-            let model = gemma2::Model::new(false, vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = gemma2::Model::new(false, &config, vb)?;
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "llama" => {
+            let mut buf = String::new();
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
-            let config: llama::LlamaConfig = serde_json::from_reader(config_reader)?;
+            let config: llama::LlamaConfig = serde_json::from_reader(&config_reader)?;
+            let config = config.into_config(false);
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
             };
-            let model = llama::Llama::load(vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = llama::Llama::load(vb, &config)?;
+            let cache = llama::Cache::new(true, DType::F32, &config, &Device::Cpu)?;
+            let model = Llama::new(&mut model, &mut cache);
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "mamba" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: mamba::Config = serde_json::from_reader(config_reader)?;
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
             };
-            let model = mamba::Model::new(&config, vb);
+            let model = mamba::Model::new(&config, vb)?;
+            let mut state = mamba::State::new(1, &config, DType::F32, &Device::Cpu)?;
+            let model = Mamba::new(&mut model, &mut state);
 
-            Box::new(model) as Box<dyn ModelForward>
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
         "mistral" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: mistral::Config = serde_json::from_reader(config_reader)?;
             let paths = safetensor_paths(&dir)?;
             let vb = unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
             };
-            let model = mistral::Model::new(vb, &config);
-            Box::new(model) as Box<dyn ModelForward>
+            let model = mistral::Model::new(&config, vb)?;
+            Ok(Box::new(model) as Box<dyn ModelForward>)
         }
-    };
+        _ => Err(anyhow!("Unsupported model type: {}", model_type)),
+    }
 }
 
 #[cfg(all(feature = "python", not(feature = "candle")))]
