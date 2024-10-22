@@ -414,16 +414,16 @@ impl Pipeline for TextGenerationPipeline {
 }
 
 impl TextGenerationPipeline {
-    fn preprocess(&self, prompt: &str, params: &PipelineParams) -> Result<ModelInputs<'static>> {
+    fn preprocess(&self, prompt: &str, params: &PipelineParams) -> Result<ModelInputs> {
         let tokens = self
             .tokenizer
             .encode(prompt, params.add_special_tokens)
             .map_err(|e| anyhow!("Tokenization error: {}", e))?
             .get_ids()
             .to_vec();
-        let input_ids = Tensor::from_vec(tokens, (1, tokens.len()), &self.device)?;
+        let input_ids = Tensor::from_vec(tokens.clone(), (1, tokens.len()), &self.device)?;
         Ok(ModelInputs {
-            input_ids: &input_ids,
+            input_ids: &input_ids.clone(),
             attention_mask: None,
             token_type_ids: None,
             position_ids: None,
@@ -434,7 +434,7 @@ impl TextGenerationPipeline {
         })
     }
 
-    fn forward(&self, input: &ModelInputs<'static>) -> Result<Tensor> {
+    fn forward(&self, input: &mut ModelInputs) -> Result<Tensor> {
         self.model.forward_input(input)
     }
 
@@ -948,9 +948,10 @@ fn load_model(
 
     let model_type = serde_json::from_reader::<_, Value>(config_reader)?
         .get("model_type")
-        .and_then(|x| x.as_str());
+        .map(|x| x.to_string())
+        .unwrap_or_default();
 
-    match model_type.unwrap() {
+    match model_type.as_str() {
         "bert" => {
             let config_reader = std::fs::File::open(dir.join("config.json"))?;
             let config: bert::Config = serde_json::from_reader(config_reader)?;
