@@ -1,18 +1,20 @@
 use super::whitelist;
-use super::TracebackError;
+// use super::TracebackError;
 use anyhow::Result;
-#[cfg(feature = "python")]
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use pyo3::prelude::*;
-#[cfg(feature = "python")]
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use pyo3::types::{IntoPyDict, PyDict, PyTuple};
 
-#[cfg(feature = "python")]
+#[cfg(all(feature = "python", not(feature = "candle")))]
 create_pymodule!("/src/bindings/transformers/transformers.py");
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub struct TransformStreamIterator {
     locals: Py<PyDict>,
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 impl TransformStreamIterator {
     pub fn new(python_iter: Py<PyAny>) -> Self {
         let locals = Python::with_gil(|py| -> Result<Py<PyDict>, PyErr> {
@@ -24,6 +26,7 @@ impl TransformStreamIterator {
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 impl Iterator for TransformStreamIterator {
     type Item = serde_json::Value;
     fn next(&mut self) -> Option<Self::Item> {
@@ -43,6 +46,7 @@ impl Iterator for TransformStreamIterator {
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn transform<T: serde::Serialize>(
     task: &serde_json::Value,
     args: &serde_json::Value,
@@ -73,6 +77,7 @@ pub fn transform<T: serde::Serialize>(
     Ok(serde_json::from_str(&results)?)
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn transform_stream<T: serde::Serialize>(
     task: &serde_json::Value,
     args: &serde_json::Value,
@@ -108,6 +113,7 @@ pub fn transform_stream<T: serde::Serialize>(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn transform_stream_iterator<T: serde::Serialize>(
     task: &serde_json::Value,
     args: &serde_json::Value,

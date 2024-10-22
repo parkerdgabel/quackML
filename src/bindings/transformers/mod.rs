@@ -1,31 +1,48 @@
+use std::any::Any;
+use std::borrow::Borrow;
 use std::fmt::Debug;
-use std::io::Write;
+use std::io::{Read, Write};
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{collections::HashMap, path::Path};
 
+use super::AToAny;
+#[cfg(all(feature = "python", not(feature = "candle")))]
+use super::{Bindings, TracebackError};
 use anyhow::{anyhow, bail, Context, Result};
+use candle_core::{DType, Device, Tensor};
+use candle_nn::VarBuilder;
+use candle_transformers::generation::LogitsProcessor;
 use duckdb::{params, params_from_iter};
 
-use super::{Bindings, TracebackError};
+use llama::Cache;
+use mamba::State;
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use pyo3::prelude::*;
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokenizers::Tokenizer;
 
 use crate::context::context;
+#[cfg(all(feature = "python", not(feature = "candle")))]
 use crate::create_pymodule;
 use crate::orm::dataset::TextSummarizationDataset;
 use crate::orm::{
     ConversationDataset, Hyperparams, Task, TextClassificationDataset,
     TextPairClassificationDataset,
 };
-
+#[cfg(all(feature = "candle", not(feature = "python")))]
+use candle_transformers::models::*;
 pub mod whitelist;
 
 mod transform;
 pub use transform::*;
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 create_pymodule!("/src/bindings/transformers/transformers.py");
 
 // Need a wrapper so we can implement traits for it
@@ -37,6 +54,401 @@ impl From<Json> for Value {
     }
 }
 
+static MODEL_CACHE: once_cell::sync::Lazy<
+    std::sync::Mutex<HashMap<i64, Box<dyn Model<Input = ModelInputs<'static>, Output = Tensor>>>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub struct Llama {
+    pub model: llama::Llama,
+    pub cache: Cache,
+}
+
+impl Llama {
+    pub fn new(model: llama::Llama, cache: Cache) -> Self {
+        Self { model, cache }
+    }
+
+    pub fn embed(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        self.model.embed(x)
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub struct Mamba {
+    pub model: mamba::Model,
+    pub state: State,
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Mamba {
+    pub fn new(model: mamba::Model, state: State) -> Self {
+        Self { model, state }
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+trait Model: Send + Sync {
+    type Input;
+    type Output;
+
+    fn forward_input(&mut self, input: &Self::Input) -> Result<Self::Output>;
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String>;
+}
+struct TextGenerationPipeline {
+    model: Arc<Box<dyn Model<Input = ModelInputs<'static>, Output = Tensor>>>,
+    device: Device,
+    tokenizer: Tokenizer,
+    logits_processor: LogitsProcessor,
+    repetition_penalty: f64,
+    repeat_last_n: usize,
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub struct ModelInputs<'a> {
+    pub input_ids: &'a Tensor,
+    pub attention_mask: Option<&'a Tensor>,
+    pub token_type_ids: Option<&'a Tensor>,
+    pub position_ids: Option<&'a Tensor>,
+    pub past_key_values: Option<&'a [(Tensor, Tensor)]>,
+    pub seqlen_offset: Option<usize>,
+    pub index_pos: Option<usize>,
+    pub decoder_input_ids: Option<&'a Tensor>,
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for bert::BertModel {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(
+            inputs.input_ids,
+            inputs.token_type_ids.unwrap(),
+            inputs.attention_mask,
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        // Implement generation logic for BERT
+        unimplemented!("Generation is not implemented for BERT")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for distilbert::DistilBertModel {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.attention_mask.as_ref().unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for DistilBERT")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for falcon::Falcon {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids).map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Falcon")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for gemma::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Gemma")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for gemma2::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Gemma2")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for Llama {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.model
+            .forward(
+                &inputs.input_ids,
+                inputs.index_pos.unwrap(),
+                &mut self.cache,
+            )
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Llama")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for Mamba {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.model
+            .forward(&inputs.input_ids, &mut self.state)
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Mamba")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for mistral::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Mistral")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for mixtral::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Mixtral")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for phi::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids).map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Phi")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for phi3::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Phi3")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for qwen2::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(
+            &inputs.input_ids,
+            inputs.seqlen_offset.unwrap(),
+            inputs.attention_mask,
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Qwen2")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for qwen2_moe::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Qwen2 MoE")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for starcoder2::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for StarCoder2")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for t5::T5ForConditionalGeneration {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(
+            &inputs.input_ids,
+            inputs.decoder_input_ids.as_ref().unwrap(),
+        )
+        .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for T5")
+    }
+}
+
+#[cfg(all(feature = "candle", not(feature = "python")))]
+impl Model for yi::Model {
+    type Input = ModelInputs<'static>;
+    type Output = Tensor;
+
+    fn forward_input(&mut self, inputs: &Self::Input) -> Result<Self::Output> {
+        self.forward(&inputs.input_ids, inputs.seqlen_offset.unwrap())
+            .map_err(anyhow::Error::from)
+    }
+
+    fn generate(&self, input_ids: &Tensor, tokenizer: &Tokenizer) -> Result<String> {
+        unimplemented!("Generation is not implemented for Yi")
+    }
+}
+
+type ModelInput = HashMap<String, Tensor>;
+type ModelOutput = HashMap<String, Arc<dyn Any + Send + Sync>>;
+type PipelineResults = HashMap<String, Arc<dyn Any + Send + Sync>>;
+
+#[derive(Debug, Clone)]
+struct PipelineParams {
+    add_special_tokens: bool,
+    padding: Option<bool>,
+    truncation: Option<bool>,
+    max_length: Option<usize>,
+    prefix: Option<String>,
+    handle_long_generation: bool,
+    continue_final_message: bool,
+}
+
+impl Default for PipelineParams {
+    fn default() -> Self {
+        Self {
+            add_special_tokens: true,
+            padding: None,
+            truncation: None,
+            max_length: None,
+            prefix: None,
+            handle_long_generation: false,
+            continue_final_message: false,
+        }
+    }
+}
+
+trait Pipeline: Send + Sync {
+    fn run(&self, prompt: &str, params: &PipelineParams) -> Result<PipelineResults>;
+}
+
+impl Pipeline for TextGenerationPipeline {
+    fn run(&self, prompt: &str, params: &PipelineParams) -> Result<PipelineResults> {
+        let input = self.preprocess(prompt, params)?;
+        let output = self.forward(&input)?;
+        self.postprocess(output)
+    }
+}
+
+impl TextGenerationPipeline {
+    fn preprocess(&self, prompt: &str, params: &PipelineParams) -> Result<ModelInputs> {
+        let tokens = self
+            .tokenizer
+            .encode(prompt, params.add_special_tokens)
+            .map_err(|e| anyhow!("Tokenization error: {}", e))?
+            .get_ids()
+            .to_vec();
+        let input_ids = Tensor::from_vec(tokens.clone(), (1, tokens.len()), &self.device)?;
+        Ok(ModelInputs {
+            input_ids: &input_ids.clone(),
+            attention_mask: None,
+            token_type_ids: None,
+            position_ids: None,
+            past_key_values: None,
+            seqlen_offset: None,
+            index_pos: None,
+            decoder_input_ids: None,
+        })
+    }
+
+    fn forward(&self, input: &mut ModelInputs) -> Result<Tensor> {
+        self.model.forward_input(input)
+    }
+
+    fn postprocess(&self, output: Tensor) -> Result<PipelineResults> {
+        let mut results = HashMap::new();
+        results.insert(
+            "generated_text".to_string(),
+            Arc::new(output) as Arc<dyn Any + Send + Sync>,
+        );
+        Ok(results)
+    }
+}
+
+#[cfg(all(feature = "python", not(feature = "candle")))]
 impl FromPyObject<'_> for Json {
     fn extract(ob: &PyAny) -> PyResult<Self> {
         if ob.is_instance_of::<PyDict>() {
@@ -81,6 +493,7 @@ impl FromPyObject<'_> for Json {
     }
 }
 
+#[cfg(feature = "python")]
 pub fn get_model_from(task: &Value) -> Result<String> {
     Python::with_gil(|py| -> Result<String> {
         let get_model_from = get_module!(PY_MODULE)
@@ -93,6 +506,24 @@ pub fn get_model_from(task: &Value) -> Result<String> {
     })
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn embed(
+    transformer: &str,
+    inputs: Vec<&str>,
+    kwargs: &serde_json::Value,
+) -> Result<Vec<Vec<f32>>> {
+    // let tokenizer_params = FromPretrainedParameters::default();
+
+    let tokenizer = Tokenizer::from_pretrained(transformer, None).map_err(|e| anyhow!("{}", e))?;
+    let outputs = tokenizer.encode_batch(inputs, false).unwrap();
+    let outputs = outputs
+        .into_iter()
+        .map(|x| x.get_ids().into_iter().map(|val| *val as f32).collect())
+        .collect();
+    Ok(outputs)
+}
+
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn embed(
     transformer: &str,
     inputs: Vec<&str>,
@@ -128,6 +559,7 @@ pub struct RankResult {
     pub text: Option<String>,
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn rank(
     transformer: &str,
     query: &str,
@@ -167,6 +599,7 @@ pub struct TextClassifier {
     model_id: i64,
 }
 
+#[cfg(feature = "python")]
 impl TextClassifier {
     pub fn from_id(id: i64) -> Result<Box<dyn Bindings>> {
         let result = Python::with_gil(|py| -> Result<Self> {
@@ -201,12 +634,14 @@ impl TextClassifier {
     }
 }
 
+#[cfg(feature = "python")]
 impl Debug for TextClassifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextClassifier").finish()
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 impl Bindings for TextClassifier {
     fn predict(
         &self,
@@ -275,6 +710,7 @@ impl Bindings for TextClassifier {
     }
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_text_classification(
     task: &Task,
     dataset: TextClassificationDataset,
@@ -312,6 +748,7 @@ pub fn finetune_text_classification(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_text_pair_classification(
     task: &Task,
     dataset: TextPairClassificationDataset,
@@ -351,6 +788,7 @@ pub fn finetune_text_pair_classification(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_conversation(
     task: &Task,
     dataset: ConversationDataset,
@@ -390,6 +828,7 @@ pub fn finetune_conversation(
     })
 }
 
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn finetune_text_summarization(
     task: &Task,
     dataset: TextSummarizationDataset,
@@ -427,6 +866,213 @@ pub fn finetune_text_summarization(
     })
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn generate(
+    model_id: i64,
+    inputs: Vec<&str>,
+    config: serde_json::Value,
+) -> Result<Vec<String>> {
+    let model = MODEL_CACHE.lock().unwrap().get(&model_id).cloned();
+    let model = match model {
+        Some(model) => model,
+        None => {
+            let mut dir = std::path::PathBuf::from("/tmp/quackml/models");
+            dir.push(model_id.to_string());
+            if !dir.exists() {
+                dump_model(model_id, dir.clone())?;
+            }
+            let result = context::run(|conn| {
+                conn.query_row(
+                    "
+                        SELECT task::TEXT
+                        FROM quackml.projects
+                        JOIN quackml.models
+                            ON models.project_id = projects.id
+                        WHERE models.id = $1
+                        ",
+                    params![model_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| anyhow!("failed to get task: {e}"))
+            });
+            let task = result.expect("failed to get task");
+            let model = load_model(model_id, &task, dir)?;
+            MODEL_CACHE.lock().unwrap().insert(model_id, model.clone());
+            model
+        }
+    };
+
+    let pipeline = TextGenerationPipeline {
+        model: Arc::new(model),
+        device: Device::Cpu,
+        tokenizer: Tokenizer::from_pretrained("gpt2", None)?,
+        logits_processor: LogitsProcessor::new(Default::default(), None, None),
+        repetition_penalty: 1.0,
+        repeat_last_n: 0,
+    };
+
+    let mut results = Vec::new();
+    for input in inputs {
+        let params = PipelineParams::default();
+        let output = pipeline.run(input, &params)?;
+        if let Some(generated_text) = output.get("generated_text") {
+            if let Some(text) = generated_text.downcast_ref::<String>() {
+                results.push(text.clone());
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn safetensor_paths(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths = vec![];
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if let Some(ext) = path.extension() {
+            if ext == "safetensors" {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
+fn load_model(
+    model_id: i64,
+    task: &str,
+    dir: PathBuf,
+) -> Result<Box<dyn Model<Input = ModelInputs<'static>, Output = Tensor>>> {
+    let config_reader = std::fs::File::open(dir.join("config.json"))?;
+
+    let model_type = serde_json::from_reader::<_, Value>(config_reader)?
+        .get("model_type")
+        .map(|x| x.to_string())
+        .unwrap_or_default();
+
+    match model_type.as_str() {
+        "bert" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: bert::Config = serde_json::from_reader(config_reader)?;
+
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), bert::DTYPE, &Device::Cpu)?
+            };
+            let model = bert::BertModel::load(vb, &config)?;
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "distilbert" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: distilbert::Config = serde_json::from_reader(config_reader)?;
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(
+                    paths.as_slice(),
+                    distilbert::DTYPE,
+                    &Device::Cpu,
+                )?
+            };
+            let model = distilbert::DistilBertModel::load(vb, &config)?;
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "falcon" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: falcon::Config = serde_json::from_reader(config_reader)?;
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
+            };
+            let model = falcon::Falcon::load(vb, config)?;
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "gemma" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: gemma::Config = serde_json::from_reader(config_reader)?;
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
+            };
+            let model = gemma::Model::new(false, &config, vb)?;
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "gemma2" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: gemma2::Config = serde_json::from_reader(config_reader)?;
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
+            };
+            let model = gemma2::Model::new(false, &config, vb)?;
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "llama" => {
+            let mut buf = String::new();
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: llama::LlamaConfig = serde_json::from_reader(&config_reader)?;
+            let config = config.into_config(false);
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
+            };
+            let model = llama::Llama::load(vb, &config)?;
+            let cache = llama::Cache::new(true, DType::F32, &config, &Device::Cpu)?;
+            let model = Llama::new(model, cache);
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "mamba" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: mamba::Config = serde_json::from_reader(config_reader)?;
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
+            };
+            let mamba = mamba::Model::new(&config, vb)?;
+            let state = mamba::State::new(1, &config, DType::F32, &Device::Cpu)?;
+            let model = Mamba::new(mamba, state);
+
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        "mistral" => {
+            let config_reader = std::fs::File::open(dir.join("config.json"))?;
+            let config: mistral::Config = serde_json::from_reader(config_reader)?;
+            let paths = safetensor_paths(&dir)?;
+            let vb = unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.as_slice(), DType::F32, &Device::Cpu)?
+            };
+            let model = mistral::Model::new(&config, vb)?;
+            Ok(Box::new(model)
+                as Box<
+                    dyn Model<Input = ModelInputs<'static>, Output = Tensor>,
+                >)
+        }
+        _ => Err(anyhow!("Unsupported model type: {}", model_type.unwrap())),
+    }
+}
+
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn generate(
     model_id: i64,
     inputs: Vec<&str>,
@@ -516,6 +1162,17 @@ fn dump_model(model_id: i64, dir: PathBuf) -> Result<()> {
     })
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn load_dataset(
+    name: &str,
+    subset: Option<String>,
+    limit: Option<usize>,
+    kwargs: &serde_json::Value,
+) -> Result<usize> {
+    Ok(0)
+}
+
+#[cfg(all(feature = "python", not(feature = "candle")))]
 pub fn load_dataset(
     name: &str,
     subset: Option<String>,
@@ -690,6 +1347,12 @@ pub fn load_dataset(
     Ok(num_rows)
 }
 
+#[cfg(all(feature = "candle", not(feature = "python")))]
+pub fn clear_gpu_cache(memory_usage: Option<f32>) -> Result<bool> {
+    Ok(false)
+}
+
+#[cfg(feature = "python")]
 pub fn clear_gpu_cache(memory_usage: Option<f32>) -> Result<bool> {
     Python::with_gil(|py| -> Result<bool> {
         let clear_gpu_cache: Py<PyAny> = get_module!(PY_MODULE)

@@ -17,18 +17,16 @@ use duckdb::{
     Rows,
 };
 use itertools::izip;
-use libduckdb_sys::{
-    duckdb_create_list_type, duckdb_list_entry, duckdb_string_t, duckdb_vector, DuckDBSuccess,
-};
+use libduckdb_sys::duckdb_string_t;
 use log::*;
-use ndarray::{AssignElem, Zip};
+use ndarray::Zip;
 
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 use serde_json::json;
 use serde_json::{Map, Value};
 
 use crate::context::context;
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 use crate::orm::*;
 
 macro_rules! unwrap_or_error {
@@ -1252,7 +1250,7 @@ impl VScalar for EmbedScalar {
     }
 }
 
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 pub fn embed(transformer: &str, text: &str, kwargs: serde_json::Value) -> Vec<f32> {
     match crate::bindings::transformers::embed(transformer, vec![text], &kwargs) {
         Ok(output) => output.first().unwrap().to_vec(),
@@ -1260,7 +1258,7 @@ pub fn embed(transformer: &str, text: &str, kwargs: serde_json::Value) -> Vec<f3
     }
 }
 
-#[cfg(all(feature = "python", not(feature = "use_as_lib")))]
+// #[cfg(all(feature = "python", not(feature = "use_as_lib")))]
 pub fn embed_batch(
     transformer: &str,
     inputs: Vec<&str>,
@@ -1639,7 +1637,7 @@ impl VScalar for GenerateScalar {
     }
 }
 
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 fn generate(project_name: &str, input: &str, config: serde_json::Value) -> String {
     generate_batch(project_name, vec![input], config)
         .first()
@@ -1647,7 +1645,7 @@ fn generate(project_name: &str, input: &str, config: serde_json::Value) -> Strin
         .to_string()
 }
 
-#[cfg(feature = "python")]
+// #[cfg(feature = "python")]
 fn generate_batch(project_name: &str, inputs: Vec<&str>, config: serde_json::Value) -> Vec<String> {
     use core::panic;
 
