@@ -634,10 +634,14 @@ pub fn generate(
             });
             let task = result.expect("failed to get task");
             let model = load_model(model_id, &task, dir)?;
-            MODEL_CACHE.lock().unwrap().insert(model_id, model);
+            MODEL_CACHE.lock().insert(model_id, model);
             model
         }
     };
+
+    let tokenizer = Tokenizer::from_pretrained("gpt2", None).map_err(|e| anyhow!("{}", e))?;
+
+    let mut logits_processor = LogitsProcessor::new(&config);
 }
 
 pub fn clear_gpu_cache(memory_usage: Option<f32>) -> Result<bool> {
