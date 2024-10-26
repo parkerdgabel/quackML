@@ -10,6 +10,7 @@ use models::{
     Gemma2TransformerModel, GemmaTransformerModel, LlamaTransformerModel, MambaTransformerModel,
     MistralTransformerModel,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -43,7 +44,7 @@ pub struct ModelInputs<'a> {
 }
 
 /// Generation configuration with model-specific parameters
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationConfig {
     pub max_length: usize,
     pub temperature: f32,
@@ -106,13 +107,13 @@ pub struct TextGenerator {
 
 impl TextGenerator {
     pub fn new(
-        model: Box<dyn TransformerModel>,
+        model: Arc<Box<dyn TransformerModel>>,
         tokenizer: tokenizers::Tokenizer,
         logits_processor: LogitsProcessor,
         config: Option<GenerationConfig>,
     ) -> Self {
         Self {
-            model: Arc::new(model),
+            model,
             tokenizer,
             logits_processor,
             config: config.unwrap_or_default(),
@@ -600,7 +601,7 @@ fn load_model(model_id: i64, task: &str, dir: PathBuf) -> Result<Box<dyn Transfo
             let inner_model = mistral::Model::new(&config, vb)?;
             Ok(Box::new(MistralTransformerModel::new(inner_model)))
         }
-        _ => Err(anyhow!("Unsupported model type: {}", model_type.unwrap())),
+        _ => Err(anyhow!("Unsupported model type: {}", model_type)),
     }
 }
 
@@ -609,10 +610,9 @@ pub fn generate(
     inputs: Vec<&str>,
     config: serde_json::Value,
 ) -> Result<Vec<String>> {
-    let model = MODEL_CACHE.lock().unwrap().get(&model_id).cloned();
-    let model = match model {
-        Some(model) => model,
-        None => {
+    let model = {
+        let mut cache = MODEL_CACHE.lock();
+        if !cache.contains_key(&model_id) {
             let mut dir = std::path::PathBuf::from("/tmp/quackml/models");
             dir.push(model_id.to_string());
             if !dir.exists() {
@@ -634,14 +634,37 @@ pub fn generate(
             });
             let task = result.expect("failed to get task");
             let model = load_model(model_id, &task, dir)?;
-            MODEL_CACHE.lock().insert(model_id, model);
-            model
+            cache.insert(model_id, model);
         }
+        Arc::new(*cache.get(&model_id).unwrap().clone())
     };
 
     let tokenizer = Tokenizer::from_pretrained("gpt2", None).map_err(|e| anyhow!("{}", e))?;
+    let logits_processor_config = config.get("logits_processor").unwrap_or(&Value::Null);
+    let (seed, temperature, top_p) = match logits_processor_config {
+        Value::Object(map) => (
+            map.get("seed").map(|x| x.as_u64().unwrap_or(0)),
+            map.get("temperature")
+                .map(|x| x.as_f64().unwrap_or(1.0) as f64),
+            map.get("top_p").map(|x| x.as_f64().unwrap_or(1.0) as f64),
+        ),
+        _ => (None, None, None),
+    };
 
-    let mut logits_processor = LogitsProcessor::new(&config);
+    let logits_processor = LogitsProcessor::new(seed.unwrap_or(42), temperature, top_p);
+
+    let gen_config = config.get("generation").unwrap_or(&Value::Null);
+
+    let config = serde_json::from_value::<GenerationConfig>(gen_config.clone())?;
+
+    let mut generator = TextGenerator::new(model, tokenizer, logits_processor, Some(config));
+
+    let outputs = inputs
+        .iter()
+        .map(|x| generator.generate(x))
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(outputs)
 }
 
 pub fn clear_gpu_cache(memory_usage: Option<f32>) -> Result<bool> {
