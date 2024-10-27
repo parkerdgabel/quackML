@@ -29,7 +29,7 @@ use super::dump_model;
 
 #[cfg(all(feature = "candle", not(feature = "python")))]
 // Common type aliases
-type ModelCache = HashMap<i64, Box<dyn TransformerModel>>;
+type ModelCache = HashMap<i64, Arc<Box<dyn TransformerModel>>>;
 
 // Global model cache
 static MODEL_CACHE: Lazy<Mutex<ModelCache>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -634,9 +634,10 @@ pub fn generate(
             });
             let task = result.expect("failed to get task");
             let model = load_model(model_id, &task, dir)?;
-            cache.insert(model_id, model);
+            cache.insert(model_id, Arc::new(model));
         }
-        Arc::new(*cache.get(&model_id).unwrap().clone())
+
+        cache.get(&model_id).unwrap().clone()
     };
 
     let tokenizer = Tokenizer::from_pretrained("gpt2", None).map_err(|e| anyhow!("{}", e))?;
