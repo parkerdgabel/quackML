@@ -129,6 +129,9 @@ wrap_fit!(spectral_co, "spectral_coclustering");
 
 wrap_fit!(pca, "pca_decomposition");
 
+wrap_fit!(knn_regression, "knn_regression");
+wrap_fit!(knn_classification, "knn_classification");
+
 fn fit(
     dataset: &Dataset,
     hyperparams: &Hyperparams,

@@ -39,7 +39,7 @@ CREATE TYPE status AS ENUM (
 		'pending',
     'in_progress',
 		'running',
-		'sucessful',
+		'successful',
 		'failed'
 );
 
@@ -90,10 +90,37 @@ CREATE TABLE IF NOT EXISTS quackml.models(
 	search_params JSON NOT NULL,
 	search_args JSON NOT NULL,
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
+	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
+	-- Semantic versioning support
+	version TEXT,
+	version_description TEXT,
+	parent_model_id BIGINT REFERENCES quackml.models(id),
+	is_default BOOLEAN DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS models_project_id_idx ON quackml.models(project_id);
+CREATE INDEX IF NOT EXISTS models_snapshot_id_idx ON quackml.models(snapshot_id);
+CREATE INDEX IF NOT EXISTS models_version_idx ON quackml.models(project_id, version);
+
+---
+--- Experiments track distinct training runs with metadata
+---
+CREATE SEQUENCE IF NOT EXISTS quackml.experiments_id_seq START 1;
+CREATE TABLE IF NOT EXISTS quackml.experiments(
+	id BIGINT PRIMARY KEY DEFAULT nextval('quackml.experiments_id_seq'),
+	project_id BIGINT NOT NULL REFERENCES quackml.projects(id),
+	name TEXT NOT NULL,
+	description TEXT,
+	model_id BIGINT REFERENCES quackml.models(id),
+	hyperparams JSON,
+	tags TEXT[],
+	notes TEXT,
+	status TEXT NOT NULL DEFAULT 'running',
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp(),
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT get_current_timestamp()
 );
--- CREATE INDEX IF NOT EXISTS models_project_id_idx ON quackml.models(project_id);
--- CREATE INDEX IF NOT EXISTS models_snapshot_id_idx ON quackml.models(snapshot_id);
+CREATE INDEX IF NOT EXISTS experiments_project_id_idx ON quackml.experiments(project_id);
+CREATE INDEX IF NOT EXISTS experiments_model_id_idx ON quackml.experiments(model_id);
+CREATE INDEX IF NOT EXISTS experiments_name_idx ON quackml.experiments(project_id, name);
 
 ---
 --- Deployments determine which model is live

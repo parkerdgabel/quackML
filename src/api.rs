@@ -31,13 +31,58 @@ use crate::context::context;
 #[cfg(feature = "python")]
 use crate::orm::*;
 
+/// Helper macro to unwrap Result or log error and panic (for legacy compatibility).
+/// Note: New code should prefer using proper error propagation with `?` operator.
 macro_rules! unwrap_or_error {
     ($i:expr) => {
         match $i {
             Ok(v) => v,
-            Err(e) => panic!("{e}"),
+            Err(e) => {
+                error!("Error in unwrap_or_error: {e}");
+                panic!("{e}")
+            }
         }
     };
+}
+
+/// Helper macro to unwrap Result or return an error (for VTab implementations).
+macro_rules! try_or_box_err {
+    ($i:expr) => {
+        match $i {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("{e}"),
+                )))
+            }
+        }
+    };
+    ($i:expr, $msg:expr) => {
+        match $i {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("{}: {e}", $msg),
+                )))
+            }
+        }
+    };
+}
+
+/// Safely create a CString, returning an error if the string contains null bytes.
+fn cstring_safe(s: &str) -> Result<CString, std::ffi::NulError> {
+    CString::new(s)
+}
+
+/// Safely parse a string with a FromStr implementation, returning None on parse errors.
+fn parse_optional<T: FromStr>(s: &str) -> Option<T> {
+    if s.is_empty() {
+        None
+    } else {
+        T::from_str(s).ok()
+    }
 }
 
 #[cfg(feature = "python")]
@@ -228,18 +273,27 @@ impl VTab for TrainVTab {
             .map_or_else(|| "".to_string(), |v| v.to_string());
 
         unsafe {
-            (*data).project_name = CString::new(project_name).unwrap().into_raw();
-            (*data).task = CString::new(task).unwrap().into_raw();
-            (*data).relation_name = CString::new(relation_name).unwrap().into_raw();
-            (*data).y_column_name = CString::new(y_column_name).unwrap().into_raw();
-            (*data).algorithm = CString::new(algorithm).unwrap().into_raw();
-            (*data).hyperparams = CString::new(hyperparams).unwrap().into_raw();
-            (*data).search = CString::new(search).unwrap().into_raw();
-            (*data).search_params = CString::new(search_params).unwrap().into_raw();
-            (*data).search_args = CString::new(search_args).unwrap().into_raw();
+            (*data).project_name =
+                try_or_box_err!(cstring_safe(&project_name), "Invalid project_name").into_raw();
+            (*data).task = try_or_box_err!(cstring_safe(&task), "Invalid task").into_raw();
+            (*data).relation_name =
+                try_or_box_err!(cstring_safe(&relation_name), "Invalid relation_name").into_raw();
+            (*data).y_column_name =
+                try_or_box_err!(cstring_safe(&y_column_name), "Invalid y_column_name").into_raw();
+            (*data).algorithm =
+                try_or_box_err!(cstring_safe(&algorithm), "Invalid algorithm").into_raw();
+            (*data).hyperparams =
+                try_or_box_err!(cstring_safe(&hyperparams), "Invalid hyperparams").into_raw();
+            (*data).search = try_or_box_err!(cstring_safe(&search), "Invalid search").into_raw();
+            (*data).search_params =
+                try_or_box_err!(cstring_safe(&search_params), "Invalid search_params").into_raw();
+            (*data).search_args =
+                try_or_box_err!(cstring_safe(&search_args), "Invalid search_args").into_raw();
             (*data).test_size = Box::into_raw(Box::new(test_size));
-            (*data).test_sampling = CString::new(test_sampling).unwrap().into_raw();
-            (*data).preprocess = CString::new(preprocess).unwrap().into_raw();
+            (*data).test_sampling =
+                try_or_box_err!(cstring_safe(&test_sampling), "Invalid test_sampling").into_raw();
+            (*data).preprocess =
+                try_or_box_err!(cstring_safe(&preprocess), "Invalid preprocess").into_raw();
         }
         Ok(())
     }
@@ -290,62 +344,122 @@ impl VTab for TrainVTab {
                 (*bind_info).test_sampling = CString::into_raw(test_sampling.clone());
                 (*bind_info).preprocess = CString::into_raw(preprocess.clone());
 
-                let task = match task.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(s),
-                    Err(_) => panic!("Failed to unwrap task string"),
+                let task_str = try_or_box_err!(task.to_str(), "Failed to parse task string");
+                let task = if task_str.is_empty() {
+                    None
+                } else {
+                    Some(task_str)
                 };
-                let relation_name = match relation_name.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(s),
-                    Err(_) => panic!("Failed to unwrap relation_name string"),
+
+                let relation_name_str = try_or_box_err!(
+                    relation_name.to_str(),
+                    "Failed to parse relation_name string"
+                );
+                let relation_name = if relation_name_str.is_empty() {
+                    None
+                } else {
+                    Some(relation_name_str)
                 };
-                let y_column_name = match y_column_name.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(s),
-                    Err(_) => panic!("Failed to unwrap y_column_name string"),
+
+                let y_column_name_str = try_or_box_err!(
+                    y_column_name.to_str(),
+                    "Failed to parse y_column_name string"
+                );
+                let y_column_name = if y_column_name_str.is_empty() {
+                    None
+                } else {
+                    Some(y_column_name_str)
                 };
-                let algorithm = match algorithm.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(Algorithm::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap algorithm string"),
+
+                let algorithm_str =
+                    try_or_box_err!(algorithm.to_str(), "Failed to parse algorithm string");
+                let algorithm = if algorithm_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        Algorithm::from_str(algorithm_str),
+                        "Invalid algorithm"
+                    ))
                 };
-                let hyperparams = match hyperparams.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap hyperparams string"),
+
+                let hyperparams_str =
+                    try_or_box_err!(hyperparams.to_str(), "Failed to parse hyperparams string");
+                let hyperparams = if hyperparams_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        serde_json::from_str(hyperparams_str),
+                        "Invalid hyperparams JSON"
+                    ))
                 };
-                let search = match search.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(Search::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap search string"),
+
+                let search_str = try_or_box_err!(search.to_str(), "Failed to parse search string");
+                let search = if search_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        Search::from_str(search_str),
+                        "Invalid search type"
+                    ))
                 };
-                let search_params = match search_params.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap search_params string"),
+
+                let search_params_str = try_or_box_err!(
+                    search_params.to_str(),
+                    "Failed to parse search_params string"
+                );
+                let search_params = if search_params_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        serde_json::from_str(search_params_str),
+                        "Invalid search_params JSON"
+                    ))
                 };
-                let search_args = match search_args.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap search_args string"),
+
+                let search_args_str =
+                    try_or_box_err!(search_args.to_str(), "Failed to parse search_args string");
+                let search_args = if search_args_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        serde_json::from_str(search_args_str),
+                        "Invalid search_args JSON"
+                    ))
                 };
+
                 let test_size = match unsafe { *(*bind_info).test_size } {
                     0.0 => None,
                     value => Some(value),
                 };
-                let test_sampling = match test_sampling.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(Sampling::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap test_sampling string"),
+
+                let test_sampling_str = try_or_box_err!(
+                    test_sampling.to_str(),
+                    "Failed to parse test_sampling string"
+                );
+                let test_sampling = if test_sampling_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        Sampling::from_str(test_sampling_str),
+                        "Invalid sampling type"
+                    ))
                 };
-                let preprocess = match preprocess.to_str() {
-                    Ok("") => None,
-                    Ok(s) => Some(serde_json::from_str(s).unwrap()),
-                    Err(_) => panic!("Failed to unwrap preprocess string"),
+
+                let preprocess_str =
+                    try_or_box_err!(preprocess.to_str(), "Failed to parse preprocess string");
+                let preprocess = if preprocess_str.is_empty() {
+                    None
+                } else {
+                    Some(try_or_box_err!(
+                        serde_json::from_str(preprocess_str),
+                        "Invalid preprocess JSON"
+                    ))
                 };
+
+                let project_name_str =
+                    try_or_box_err!(project_name.to_str(), "Failed to parse project_name");
                 let result = train(
-                    project_name.to_str().unwrap(),
+                    project_name_str,
                     task,
                     relation_name,
                     y_column_name,
@@ -365,9 +479,13 @@ impl VTab for TrainVTab {
                 let task_column = output.flat_vector(1);
                 let algorithm_column = output.flat_vector(2);
                 let deploy_column: *mut bool = output.flat_vector(3).as_mut_ptr();
-                let project_name_raw = CString::new(result.project_name).unwrap();
-                let task_raw = CString::new(result.task).unwrap();
-                let algorithm_raw = CString::new(result.algorithm).unwrap();
+                let project_name_raw = try_or_box_err!(
+                    cstring_safe(&result.project_name),
+                    "Invalid result project_name"
+                );
+                let task_raw = try_or_box_err!(cstring_safe(&result.task), "Invalid result task");
+                let algorithm_raw =
+                    try_or_box_err!(cstring_safe(&result.algorithm), "Invalid result algorithm");
 
                 proj_column.insert(0, project_name_raw);
                 task_column.insert(0, task_raw);
@@ -1127,12 +1245,11 @@ impl VScalar for LoadDatasetScalar {
             .collect();
 
         let args = izip!(source_param, subset_param, limit_param, kwargs_param);
-        let results: Vec<(String, i64)> = args
-            .map(|(source, subset, limit, kwargs)| {
-                let (name, rows) = load_dataset(&source, subset, limit, kwargs);
-                (name, rows)
-            })
-            .collect();
+        let mut results: Vec<(String, i64)> = Vec::new();
+        for (source, subset, limit, kwargs) in args {
+            let (name, rows) = load_dataset(&source, subset, limit, kwargs)?;
+            results.push((name, rows));
+        }
 
         let final_results = results
             .iter()
@@ -1167,9 +1284,8 @@ fn load_dataset(
     subset: Option<String>,
     limit: Option<i64>,
     kwargs: Option<serde_json::Value>,
-) -> (String, i64) {
-    // let subset = subset.as_deref();
-    let limit: Option<usize> = limit.map(|limit| limit.try_into().unwrap());
+) -> Result<(String, i64), Box<dyn std::error::Error>> {
+    let limit: Option<usize> = limit.map(|limit| limit.try_into().unwrap_or(usize::MAX));
     let kwargs = kwargs.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let (name, rows) = match source {
         "breast_cancer" => dataset::load_breast_cancer(limit),
@@ -1179,15 +1295,17 @@ fn load_dataset(
         "linnerud" => dataset::load_linnerud(limit),
         "wine" => dataset::load_wine(limit),
         _ => {
-            let rows =
-                match crate::bindings::transformers::load_dataset(source, subset, limit, &kwargs) {
-                    Ok(rows) => rows,
-                    Err(e) => panic!("{e}"),
-                };
+            let rows = crate::bindings::transformers::load_dataset(source, subset, limit, &kwargs)
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to load dataset: {e}"),
+                    ))
+                })?;
             (source.into(), rows as i64)
         }
     };
-    (name, rows)
+    Ok((name, rows))
 }
 
 pub struct EmbedScalar {}
@@ -1255,8 +1373,14 @@ impl VScalar for EmbedScalar {
 #[cfg(feature = "python")]
 pub fn embed(transformer: &str, text: &str, kwargs: serde_json::Value) -> Vec<f32> {
     match crate::bindings::transformers::embed(transformer, vec![text], &kwargs) {
-        Ok(output) => output.first().unwrap().to_vec(),
-        Err(e) => panic!("{e}"),
+        Ok(output) => output.first().map(|v| v.to_vec()).unwrap_or_else(|| {
+            error!("embed: No output returned from transformer");
+            Vec::new()
+        }),
+        Err(e) => {
+            error!("embed error: {e}");
+            panic!("{e}")
+        }
     }
 }
 
@@ -1268,7 +1392,10 @@ pub fn embed_batch(
 ) -> Vec<Vec<f32>> {
     match crate::bindings::transformers::embed(transformer, inputs, &kwargs) {
         Ok(output) => output,
-        Err(e) => panic!("{e}"),
+        Err(e) => {
+            error!("embed_batch error: {e}");
+            panic!("{e}")
+        }
     }
 }
 
@@ -1281,7 +1408,10 @@ pub fn rank(
 ) -> Vec<crate::bindings::transformers::RankResult> {
     match crate::bindings::transformers::rank(transformer, query, documents, &kwargs) {
         Ok(output) => output,
-        Err(e) => panic!("{e}"),
+        Err(e) => {
+            error!("rank error: {e}");
+            panic!("{e}")
+        }
     }
 }
 
@@ -1767,13 +1897,19 @@ impl VTab for FinetuneVTab {
             .map_or_else(|| false, |v| v.to_string().parse::<bool>().unwrap_or(false));
 
         // Assign parameters to BindData
-        (*data).project_name = CString::new(project_name).unwrap().into_raw();
-        (*data).task = CString::new(task).unwrap().into_raw();
-        (*data).relation_name = CString::new(relation_name).unwrap().into_raw();
-        (*data).y_column_name = CString::new(y_column_name).unwrap().into_raw();
-        (*data).model_name = CString::new(model_name).unwrap().into_raw();
-        (*data).hyperparams = CString::new(hyperparams).unwrap().into_raw();
-        (*data).test_sampling = CString::new(test_sampling).unwrap().into_raw();
+        (*data).project_name =
+            try_or_box_err!(cstring_safe(&project_name), "Invalid project_name").into_raw();
+        (*data).task = try_or_box_err!(cstring_safe(&task), "Invalid task").into_raw();
+        (*data).relation_name =
+            try_or_box_err!(cstring_safe(&relation_name), "Invalid relation_name").into_raw();
+        (*data).y_column_name =
+            try_or_box_err!(cstring_safe(&y_column_name), "Invalid y_column_name").into_raw();
+        (*data).model_name =
+            try_or_box_err!(cstring_safe(&model_name), "Invalid model_name").into_raw();
+        (*data).hyperparams =
+            try_or_box_err!(cstring_safe(&hyperparams), "Invalid hyperparams").into_raw();
+        (*data).test_sampling =
+            try_or_box_err!(cstring_safe(&test_sampling), "Invalid test_sampling").into_raw();
 
         // Allocate heap memory for boolean parameters
         (*data).automatic_deploy = Box::into_raw(Box::new(automatic_deploy));
@@ -1829,36 +1965,63 @@ impl VTab for FinetuneVTab {
             (*bind_info).test_sampling = CString::into_raw(test_sampling.clone());
 
             // Convert C strings to Rust strings
-            let project_name_str = project_name.to_str().unwrap();
-            let task_opt = match task.to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => panic!("Failed to parse task string"),
+            let project_name_str =
+                try_or_box_err!(project_name.to_str(), "Failed to parse project_name");
+
+            let task_str = try_or_box_err!(task.to_str(), "Failed to parse task string");
+            let task_opt = if task_str.is_empty() {
+                None
+            } else {
+                Some(task_str)
             };
-            let relation_name_opt = match relation_name.to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => panic!("Failed to parse relation_name string"),
+
+            let relation_name_str = try_or_box_err!(
+                relation_name.to_str(),
+                "Failed to parse relation_name string"
+            );
+            let relation_name_opt = if relation_name_str.is_empty() {
+                None
+            } else {
+                Some(relation_name_str)
             };
-            let y_column_name_opt = match y_column_name.to_str() {
-                Ok("") => None,
-                Ok(s) => Some(vec![s.to_string()]),
-                Err(_) => panic!("Failed to parse y_column_name string"),
+
+            let y_column_name_str = try_or_box_err!(
+                y_column_name.to_str(),
+                "Failed to parse y_column_name string"
+            );
+            let y_column_name_opt = if y_column_name_str.is_empty() {
+                None
+            } else {
+                Some(vec![y_column_name_str.to_string()])
             };
-            let model_name_opt = match model_name.to_str() {
-                Ok("") => None,
-                Ok(s) => Some(s),
-                Err(_) => panic!("Failed to parse model_name string"),
+
+            let model_name_str =
+                try_or_box_err!(model_name.to_str(), "Failed to parse model_name string");
+            let model_name_opt = if model_name_str.is_empty() {
+                None
+            } else {
+                Some(model_name_str)
             };
-            let hyperparams_map: Option<Hyperparams> = match hyperparams.to_str() {
-                Ok("") => None,
-                Ok(s) => Some(serde_json::from_str(s).unwrap()),
-                Err(_) => panic!("Failed to parse hyperparams string"),
+
+            let hyperparams_str =
+                try_or_box_err!(hyperparams.to_str(), "Failed to parse hyperparams string");
+            let hyperparams_map: Hyperparams = if hyperparams_str.is_empty() {
+                serde_json::Map::new()
+            } else {
+                try_or_box_err!(
+                    serde_json::from_str(hyperparams_str),
+                    "Invalid hyperparams JSON"
+                )
             };
-            let test_sampling_enum = match test_sampling.to_str() {
-                Ok("") => Sampling::stratified, // Default value
-                Ok(s) => Sampling::from_str(s).unwrap_or(Sampling::stratified),
-                Err(_) => panic!("Failed to parse test_sampling string"),
+
+            let test_sampling_str = try_or_box_err!(
+                test_sampling.to_str(),
+                "Failed to parse test_sampling string"
+            );
+            let test_sampling_enum = if test_sampling_str.is_empty() {
+                Sampling::stratified // Default value
+            } else {
+                Sampling::from_str(test_sampling_str).unwrap_or(Sampling::stratified)
             };
 
             // Call the finetune function
@@ -1868,7 +2031,7 @@ impl VTab for FinetuneVTab {
                 relation_name_opt,
                 y_column_name_opt,
                 model_name_opt,
-                &hyperparams_map.unwrap(),
+                &hyperparams_map,
                 test_size,
                 test_sampling_enum,
                 None,
