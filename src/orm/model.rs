@@ -405,6 +405,7 @@ impl Model {
                 Algorithm::lasso_least_angle => sklearn::lasso_least_angle_regression,
                 Algorithm::linear_svm => sklearn::linear_svm_regression,
                 Algorithm::catboost => sklearn::catboost_regression,
+                Algorithm::knn => sklearn::knn_regression,
                 _ => todo!("Unsupported regression algorithm: {:?}", self.algorithm),
             },
             Task::classification => match self.algorithm {
@@ -430,6 +431,7 @@ impl Model {
                 Algorithm::hist_gradient_boosting => sklearn::hist_gradient_boosting_classification,
                 Algorithm::linear_svm => sklearn::linear_svm_classification,
                 Algorithm::catboost => sklearn::catboost_classification,
+                Algorithm::knn => sklearn::knn_classification,
                 _ => todo!("Unsupported classification algorithm: {:?}", self.algorithm),
             },
             Task::clustering => match self.algorithm {
@@ -438,6 +440,12 @@ impl Model {
                 Algorithm::kmeans => sklearn::kmeans,
                 Algorithm::mini_batch_kmeans => sklearn::mini_batch_kmeans,
                 Algorithm::mean_shift => sklearn::mean_shift,
+                Algorithm::dbscan => sklearn::dbscan,
+                Algorithm::optics => sklearn::optics,
+                Algorithm::spectral => sklearn::spectral,
+                Algorithm::spectral_bi => sklearn::spectral_bi,
+                Algorithm::spectral_co => sklearn::spectral_co,
+                Algorithm::feature_agglomeration => sklearn::feature_agglomeration,
                 _ => todo!("Unsupported clustering algorithm: {:?}", self.algorithm),
             },
             Task::decomposition => match self.algorithm {

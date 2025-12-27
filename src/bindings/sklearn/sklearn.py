@@ -11,6 +11,7 @@ import sklearn.ensemble
 import sklearn.multioutput
 import sklearn.gaussian_process
 import sklearn.model_selection
+import sklearn.neighbors
 import xgboost as xgb
 import lightgbm
 import catboost
@@ -96,6 +97,8 @@ _ALGORITHM_MAP = {
     "spectral_biclustering": sklearn.cluster.SpectralBiclustering,
     "spectral_coclustering": sklearn.cluster.SpectralCoclustering,
     "pca_decomposition": sklearn.decomposition.PCA,
+    "knn_regression": sklearn.neighbors.KNeighborsRegressor,
+    "knn_classification": sklearn.neighbors.KNeighborsClassifier,
 }
 
 

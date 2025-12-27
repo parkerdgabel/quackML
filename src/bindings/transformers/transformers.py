@@ -767,26 +767,28 @@ def compute_metrics_translation(model, tokenizer, hyperparams, x, y):
 
 
 def compute_metrics_question_answering(model, tokenizer, hyperparams, x, y):
-    batch_size = self.hyperparams["per_device_eval_batch_size"]
-    batches = int(math.ceil(len(dataset) / batch_size))
+    """Compute metrics for question answering task.
 
-    with torch.no_grad():
-        for i in range(batches):
-            slice = dataset.select(
-                range(i * batch_size, min((i + 1) * batch_size, len(dataset)))
-            )
-            tokens = self.algorithm["tokenizer"].encode_plus(
-                slice["question"], slice["context"], return_tensors="pt"
-            )
-            tokens.to(self.algorithm["model"].device)
-            outputs = self.algorithm["model"](**tokens)
-            answer_start = torch.argmax(outputs[0])
-            answer_end = torch.argmax(outputs[1]) + 1
-            answer = self.algorithm["tokenizer"].convert_tokens_to_string(
-                self.algorithm["tokenizer"].convert_ids_to_tokens(
-                    tokens["input_ids"][0][answer_start:answer_end]
-                )
-            )
+    Args:
+        model: The trained QA model
+        tokenizer: The tokenizer
+        hyperparams: Dictionary containing hyperparameters
+        x: List of dicts with 'question' and 'context' keys
+        y: List of answer strings (ground truth)
+    """
+    import re
+    import string
+
+    def normalize_text(text):
+        """Normalize text for comparison: lowercase, remove punctuation and articles."""
+        text = text.lower()
+        # Remove punctuation
+        text = re.sub(r'[{}]'.format(re.escape(string.punctuation)), '', text)
+        # Remove articles
+        text = re.sub(r'\b(a|an|the)\b', ' ', text)
+        # Normalize whitespace
+        text = ' '.join(text.split())
+        return text
 
     def compute_exact_match(prediction, truth):
         return int(normalize_text(prediction) == normalize_text(truth))
@@ -810,20 +812,61 @@ def compute_metrics_question_answering(model, tokenizer, hyperparams, x, y):
 
         return 2 * (prec * rec) / (prec + rec)
 
-    def get_gold_answers(example):
-        """helper function that retrieves all possible true answers from a squad2.0 example"""
+    batch_size = hyperparams.get("per_device_eval_batch_size", 8)
+    num_samples = len(x)
+    batches = int(math.ceil(num_samples / batch_size))
 
-        gold_answers = [answer["text"] for answer in example.answers if answer["text"]]
+    all_predictions = []
 
-        # if gold_answers doesn't exist it's because this is a negative example -
-        # the only correct answer is an empty string
-        if not gold_answers:
-            gold_answers = [""]
+    model.eval()
+    with torch.no_grad():
+        for i in range(batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, num_samples)
 
-        return gold_answers
+            batch_questions = [item.get("question", item) if isinstance(item, dict) else item for item in x[start_idx:end_idx]]
+            batch_contexts = [item.get("context", "") if isinstance(item, dict) else "" for item in x[start_idx:end_idx]]
 
-    metrics = {}
-    metrics["exact_match"] = 0
+            for question, context in zip(batch_questions, batch_contexts):
+                tokens = tokenizer.encode_plus(
+                    question, context,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=512,
+                    padding=True
+                )
+                tokens = {k: v.to(model.device) for k, v in tokens.items()}
+
+                outputs = model(**tokens)
+                answer_start = torch.argmax(outputs.start_logits)
+                answer_end = torch.argmax(outputs.end_logits) + 1
+
+                answer = tokenizer.convert_tokens_to_string(
+                    tokenizer.convert_ids_to_tokens(
+                        tokens["input_ids"][0][answer_start:answer_end]
+                    )
+                )
+                all_predictions.append(answer)
+
+    # Compute metrics
+    exact_matches = []
+    f1_scores = []
+
+    for pred, truth in zip(all_predictions, y):
+        # Handle case where truth might be a list of acceptable answers
+        if isinstance(truth, list):
+            em = max(compute_exact_match(pred, t) for t in truth)
+            f1 = max(compute_f1(pred, t) for t in truth)
+        else:
+            em = compute_exact_match(pred, truth)
+            f1 = compute_f1(pred, truth)
+        exact_matches.append(em)
+        f1_scores.append(f1)
+
+    metrics = {
+        "exact_match": sum(exact_matches) / len(exact_matches) if exact_matches else 0,
+        "f1": sum(f1_scores) / len(f1_scores) if f1_scores else 0,
+    }
 
     return metrics
 
