@@ -28,6 +28,7 @@ use serde_json::json;
 use serde_json::{Map, Value};
 
 use crate::context::context;
+use crate::error::QuackMLError;
 #[cfg(feature = "python")]
 use crate::orm::*;
 
@@ -376,10 +377,16 @@ impl VTab for TrainVTab {
                 let algorithm = if algorithm_str.is_empty() {
                     None
                 } else {
-                    Some(try_or_box_err!(
-                        Algorithm::from_str(algorithm_str),
-                        "Invalid algorithm"
-                    ))
+                    match Algorithm::from_str(algorithm_str) {
+                        Ok(alg) => Some(alg),
+                        Err(_) => {
+                            let err = QuackMLError::unknown_algorithm(algorithm_str, Algorithm::all_names());
+                            return Err(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                err.to_string(),
+                            )));
+                        }
+                    }
                 };
 
                 let hyperparams_str =
@@ -458,7 +465,7 @@ impl VTab for TrainVTab {
 
                 let project_name_str =
                     try_or_box_err!(project_name.to_str(), "Failed to parse project_name");
-                let result = train(
+                let result = match train(
                     project_name_str,
                     task,
                     relation_name,
@@ -473,7 +480,15 @@ impl VTab for TrainVTab {
                     None,
                     None,
                     preprocess,
-                );
+                ) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            e.to_string(),
+                        )));
+                    }
+                };
 
                 let proj_column = output.flat_vector(0);
                 let task_column = output.flat_vector(1);
@@ -574,9 +589,9 @@ fn train(
     automatic_deploy: Option<bool>,
     materialize_snapshot: Option<bool>,
     preprocess: Option<Value>,
-) -> TrainResult {
-    let task = task.unwrap_or("NULL");
-    let relation_name = relation_name.unwrap_or("NULL");
+) -> Result<TrainResult, QuackMLError> {
+    // Validate required parameters - task and relation_name are required for new projects
+    // or when no previous snapshot exists
     let y_column_name = y_column_name.map(|y_column_name| vec![y_column_name.to_string()]);
     let algorithm = algorithm.unwrap_or(Algorithm::linear);
     let hyperparams = hyperparams.unwrap_or_else(|| serde_json::Map::new());
@@ -593,8 +608,8 @@ fn train(
 
     train_joint(
         project_name,
-        Some(task),
-        Some(relation_name),
+        task,
+        relation_name,
         y_column_name,
         algorithm,
         &hyperparams,
@@ -625,48 +640,88 @@ fn train_joint(
     automatic_deploy: Option<bool>,
     materialize_snapshot: bool,
     preprocess: String,
-) -> TrainResult {
-    let task = task.map(|t| Task::from_str(t).unwrap());
-    let project = match Project::find_by_name(project_name) {
-        Some(project) => project,
-        None => Project::create(
-            project_name,
-            match task {
-                Some(task) => task,
-                None => panic!(
-                    "Project `{}` does not exist. To create a new project, you must specify a `task`.",
-                    project_name
-                ),
-            },
-        ),
+) -> Result<TrainResult, QuackMLError> {
+    // Parse task with better error handling
+    let task = match task {
+        Some(t) => match Task::from_str(t) {
+            Ok(task) => Some(task),
+            Err(_) => {
+                return Err(QuackMLError::unknown_task(t, Task::all_names()));
+            }
+        },
+        None => None,
     };
 
-    if task.is_some() && task.unwrap() != project.task {
-        error!(
-            "Project `{:?}` already exists with a different task: `{:?}`. Create a new project instead.",
-            project.name, project.task
-        );
+    // Find or create project with proper error handling
+    let project = match Project::find_by_name(project_name) {
+        Some(project) => project,
+        None => {
+            // Project doesn't exist - require task to create new one
+            match task {
+                Some(task) => Project::create(project_name, task),
+                None => {
+                    return Err(QuackMLError::project_not_found(project_name));
+                }
+            }
+        }
+    };
+
+    // Check for task mismatch
+    if let Some(requested_task) = task {
+        if requested_task != project.task {
+            return Err(QuackMLError::ProjectTaskMismatch {
+                project_name: project.name.clone(),
+                existing_task: project.task.to_string(),
+                requested_task: requested_task.to_string(),
+            });
+        }
     }
 
+    // Handle snapshot creation with proper error messages
     let mut snapshot = match relation_name {
         None => {
-            let snapshot = project.last_snapshot().expect(
-                "You must pass a `relation_name` and `y_column_name` to snapshot the first time you train a model.",
-            );
-
-            info!("Using existing snapshot from {}", snapshot.snapshot_name(),);
-
-            snapshot
+            // No relation_name - try to use existing snapshot
+            match project.last_snapshot() {
+                Some(snapshot) => {
+                    info!("Using existing snapshot from {}", snapshot.snapshot_name());
+                    snapshot
+                }
+                None => {
+                    return Err(QuackMLError::MissingRequired {
+                        parameter: "relation_name",
+                        hint: "No previous snapshot exists for this project. You must provide \
+                               'relation_name' and 'y_column_name' to create the first snapshot.\n\n\
+                               Example:\n\
+                               SELECT * FROM train(\n\
+                                   '".to_string() + project_name + "',\n\
+                                   relation_name => 'my_table',\n\
+                                   y_column_name => 'target_column'\n\
+                               );",
+                    });
+                }
+            }
         }
 
         Some(relation_name) => {
-            info!(
-                "Snapshotting table \"{}\", this may take a little while...",
-                relation_name
-            );
+            println!("[quackML] Snapshotting table \"{}\"...", relation_name);
 
+            // Validate y_column_name for supervised tasks
             if project.task.is_supervised() && y_column_name.is_none() {
-                error!("You must pass a `y_column_name` when you pass a `relation_name` for a supervised task.");
+                return Err(QuackMLError::MissingRequired {
+                    parameter: "y_column_name",
+                    hint: format!(
+                        "Task '{}' is supervised and requires a target column.\n\n\
+                         Example:\n\
+                         SELECT * FROM train(\n\
+                             '{}',\n\
+                             relation_name => '{}',\n\
+                             y_column_name => 'your_target_column'\n\
+                         );",
+                        project.task.to_string(),
+                        project_name,
+                        relation_name
+                    ),
+                });
             }
 
             let snapshot = Snapshot::create(
@@ -699,7 +754,9 @@ fn train_joint(
         algorithm
     };
 
-    println!("Creating model...");
+    println!("[quackML] Training {} model with {} algorithm...",
+             project.task.to_string(), algorithm.to_string());
+
     // # Default repeatable random state when possible
     // let algorithm = Model.algorithm_from_name_and_task(algorithm, task);
     // if "random_state" in algorithm().get_params() and "random_state" not in hyperparams:
@@ -714,6 +771,8 @@ fn train_joint(
         serde_json::from_str(&search_args).unwrap(),
     )
     .unwrap();
+
+    println!("[quackML] Model training complete.");
 
     let new_metrics: &serde_json::Value = &model.metrics.expect("Failed to get model metrics");
 
@@ -740,7 +799,7 @@ fn train_joint(
 
     let mut deploy = true;
 
-    println!("Automatic deploy: {:?}", automatic_deploy);
+    println!("[quackML] Evaluating model metrics...");
     match automatic_deploy {
         // Deploy only if metrics are better than previous model, or if its the first model
         Some(true) | None => {
@@ -798,16 +857,17 @@ fn train_joint(
 
     if deploy {
         project.deploy(model.id, Strategy::new_score);
+        println!("[quackML] Model deployed successfully.");
     } else {
-        info!("Not deploying newly trained model.");
+        println!("[quackML] Model trained but not deployed (existing model has better metrics).");
     }
 
-    TrainResult {
+    Ok(TrainResult {
         project_name: project.name,
         task: project.task.to_string(),
         algorithm: model.algorithm.to_string(),
         deploy,
-    }
+    })
 }
 
 fn deploy_model(model_id: i64) -> Vec<(String, String, String)> {

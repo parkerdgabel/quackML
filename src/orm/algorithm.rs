@@ -103,6 +103,25 @@ impl std::str::FromStr for Algorithm {
     }
 }
 
+impl Algorithm {
+    /// Returns a list of all valid algorithm names.
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "linear", "xgboost", "xgboost_random_forest", "svm", "lasso",
+            "elastic_net", "ridge", "kmeans", "dbscan", "knn", "random_forest",
+            "least_angle", "lasso_least_angle", "orthogonal_matching_pursuit",
+            "bayesian_ridge", "automatic_relevance_determination",
+            "stochastic_gradient_descent", "perceptron", "passive_aggressive",
+            "ransac", "theil_sen", "huber", "quantile", "kernel_ridge",
+            "gaussian_process", "nu_svm", "ada_boost", "bagging", "extra_trees",
+            "gradient_boosting_trees", "hist_gradient_boosting", "linear_svm",
+            "lightgbm", "transformers", "affinity_propagation", "birch",
+            "feature_agglomeration", "mini_batch_kmeans", "mean_shift", "optics",
+            "spectral", "spectral_bi", "spectral_co", "catboost", "pca",
+        ]
+    }
+}
+
 impl std::string::ToString for Algorithm {
     fn to_string(&self) -> String {
         match *self {

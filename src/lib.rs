@@ -1,6 +1,7 @@
 mod api;
 pub mod bindings;
 mod context;
+pub mod error;
 pub mod orm;
 
 use std::{

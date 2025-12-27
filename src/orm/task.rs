@@ -127,6 +127,18 @@ impl Task {
     }
 }
 
+impl Task {
+    /// Returns a list of all valid task names.
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "regression", "classification", "decomposition", "clustering",
+            "question_answering", "summarization", "translation",
+            "text_classification", "text_generation", "text2text",
+            "embedding", "text_pair_classification", "conversation",
+        ]
+    }
+}
+
 impl std::str::FromStr for Task {
     type Err = ();
 
