@@ -62,6 +62,7 @@ pub fn quack_ml_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     // Register model introspection functions
     conn.register_table_function::<api::DeployedModelsVTab>("deployed_models")?;
     conn.register_table_function::<api::TrainedModelsVTab>("trained_models")?;
+    conn.register_table_function::<api::CompareModelsVTab>("compare_models")?;
 
     // Register validation functions
     conn.register_table_function::<api::ValidateTrainVTab>("validate_train")?;

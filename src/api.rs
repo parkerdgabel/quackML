@@ -3022,6 +3022,12 @@ const FUNCTION_HELP: &[FunctionHelp] = &[
         parameters: "(none)",
         example: "SELECT get_verbose()"
     },
+    FunctionHelp {
+        name: "compare_models",
+        description: "Compare models side-by-side with extracted metrics (accuracy, f1, mse, etc.)",
+        parameters: "[project_name] - optional filter by project",
+        example: "SELECT * FROM compare_models('my_project') ORDER BY accuracy DESC"
+    },
 ];
 
 pub struct HelpVTab;
@@ -3634,6 +3640,229 @@ impl VTab for TrainedModelsVTab {
         None
     }
 }
+
+// =============================================================================
+// compare_models() - Compare models side-by-side with extracted metrics
+// =============================================================================
+
+#[repr(C)]
+pub struct CompareModelsBindData {
+    project_filter: *mut c_char,
+}
+
+impl Free for CompareModelsBindData {
+    fn free(&mut self) {
+        unsafe {
+            if !self.project_filter.is_null() {
+                drop(CString::from_raw(self.project_filter));
+            }
+        }
+    }
+}
+
+#[repr(C)]
+pub struct CompareModelsInitData {
+    done: bool,
+}
+
+impl Free for CompareModelsInitData {
+    fn free(&mut self) {}
+}
+
+pub struct CompareModelsVTab;
+
+impl VTab for CompareModelsVTab {
+    type InitData = CompareModelsInitData;
+    type BindData = CompareModelsBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("model_id", LogicalTypeHandle::from(LogicalTypeId::Bigint));
+        bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("is_deployed", LogicalTypeHandle::from(LogicalTypeId::Boolean));
+        bind.add_result_column("accuracy", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("f1", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("precision", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("recall", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("mse", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("r2", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("training_time_ms", LogicalTypeHandle::from(LogicalTypeId::Double));
+
+        // Get optional project filter
+        let project_filter = if bind.get_parameter(0).to_string().is_empty() {
+            ""
+        } else {
+            &bind.get_parameter(0).to_string()
+        };
+
+        unsafe {
+            (*data).project_filter = CString::new(project_filter.to_string()).unwrap().into_raw();
+        }
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).done = false;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<CompareModelsInitData>();
+        let bind_data = func.get_bind_data::<CompareModelsBindData>();
+
+        unsafe {
+            if (*init_data).done {
+                output.set_len(0);
+                return Ok(());
+            }
+            (*init_data).done = true;
+
+            let project_filter = CString::from_raw((*bind_data).project_filter);
+            (*bind_data).project_filter = project_filter.clone().into_raw();
+            let project_filter = project_filter.to_str().unwrap_or("");
+
+            // Build query based on filter
+            let query = if project_filter.is_empty() {
+                "SELECT
+                    m.id as model_id,
+                    p.name as project,
+                    p.task,
+                    m.algorithm,
+                    EXISTS(
+                        SELECT 1 FROM quackml.deployments d
+                        WHERE d.model_id = m.id
+                        AND d.id = (SELECT MAX(id) FROM quackml.deployments WHERE project_id = p.id)
+                    ) as is_deployed,
+                    COALESCE(m.metrics, '{}') as metrics,
+                    m.fit_time
+                FROM quackml.models m
+                JOIN quackml.projects p ON m.project_id = p.id
+                ORDER BY p.name, m.created_at DESC".to_string()
+            } else {
+                format!(
+                    "SELECT
+                        m.id as model_id,
+                        p.name as project,
+                        p.task,
+                        m.algorithm,
+                        EXISTS(
+                            SELECT 1 FROM quackml.deployments d
+                            WHERE d.model_id = m.id
+                            AND d.id = (SELECT MAX(id) FROM quackml.deployments WHERE project_id = p.id)
+                        ) as is_deployed,
+                        COALESCE(m.metrics, '{{}}') as metrics,
+                        m.fit_time
+                    FROM quackml.models m
+                    JOIN quackml.projects p ON m.project_id = p.id
+                    WHERE p.name = '{}'
+                    ORDER BY m.created_at DESC",
+                    project_filter
+                )
+            };
+
+            #[derive(Debug)]
+            struct ModelRow {
+                model_id: i64,
+                project: String,
+                task: String,
+                algorithm: String,
+                is_deployed: bool,
+                accuracy: Option<f64>,
+                f1: Option<f64>,
+                precision: Option<f64>,
+                recall: Option<f64>,
+                mse: Option<f64>,
+                r2: Option<f64>,
+                fit_time: Option<f64>,
+            }
+
+            let results: Vec<ModelRow> = context::run(|conn| {
+                let mut stmt = conn.prepare(&query)?;
+                let rows = stmt.query_map([], |row| {
+                    let metrics_str: String = row.get(5)?;
+                    let metrics: serde_json::Value = serde_json::from_str(&metrics_str).unwrap_or(serde_json::json!({}));
+
+                    Ok(ModelRow {
+                        model_id: row.get(0)?,
+                        project: row.get(1)?,
+                        task: row.get(2)?,
+                        algorithm: row.get(3)?,
+                        is_deployed: row.get(4)?,
+                        accuracy: metrics.get("accuracy").and_then(|v| v.as_f64()),
+                        f1: metrics.get("f1").and_then(|v| v.as_f64()),
+                        precision: metrics.get("precision").and_then(|v| v.as_f64()),
+                        recall: metrics.get("recall").and_then(|v| v.as_f64()),
+                        mse: metrics.get("mse").and_then(|v| v.as_f64())
+                            .or_else(|| metrics.get("mean_squared_error").and_then(|v| v.as_f64())),
+                        r2: metrics.get("r2").and_then(|v| v.as_f64()),
+                        fit_time: row.get::<_, Option<f64>>(6).ok().flatten(),
+                    })
+                })?;
+
+                let mut results = Vec::new();
+                for row in rows {
+                    if let Ok(r) = row {
+                        results.push(r);
+                    }
+                }
+                Ok(results)
+            }).unwrap_or_default();
+
+            if results.is_empty() {
+                output.set_len(0);
+                return Ok(());
+            }
+
+            let model_id_col: *mut i64 = output.flat_vector(0).as_mut_ptr();
+            let project_col = output.flat_vector(1);
+            let task_col = output.flat_vector(2);
+            let algorithm_col = output.flat_vector(3);
+            let is_deployed_col: *mut bool = output.flat_vector(4).as_mut_ptr();
+            let accuracy_col: *mut f64 = output.flat_vector(5).as_mut_ptr();
+            let f1_col: *mut f64 = output.flat_vector(6).as_mut_ptr();
+            let precision_col: *mut f64 = output.flat_vector(7).as_mut_ptr();
+            let recall_col: *mut f64 = output.flat_vector(8).as_mut_ptr();
+            let mse_col: *mut f64 = output.flat_vector(9).as_mut_ptr();
+            let r2_col: *mut f64 = output.flat_vector(10).as_mut_ptr();
+            let fit_time_col: *mut f64 = output.flat_vector(11).as_mut_ptr();
+
+            for (i, row) in results.iter().enumerate() {
+                model_id_col.add(i).write(row.model_id);
+                project_col.insert(i, CString::new(row.project.as_str()).unwrap());
+                task_col.insert(i, CString::new(row.task.as_str()).unwrap());
+                algorithm_col.insert(i, CString::new(row.algorithm.as_str()).unwrap());
+                is_deployed_col.add(i).write(row.is_deployed);
+                accuracy_col.add(i).write(row.accuracy.unwrap_or(f64::NAN));
+                f1_col.add(i).write(row.f1.unwrap_or(f64::NAN));
+                precision_col.add(i).write(row.precision.unwrap_or(f64::NAN));
+                recall_col.add(i).write(row.recall.unwrap_or(f64::NAN));
+                mse_col.add(i).write(row.mse.unwrap_or(f64::NAN));
+                r2_col.add(i).write(row.r2.unwrap_or(f64::NAN));
+                fit_time_col.add(i).write(row.fit_time.unwrap_or(f64::NAN));
+            }
+
+            output.set_len(results.len());
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    }
+}
+
 //
 // #[cfg(feature = "python")]
 // #[pg_extern(name = "sklearn_f1_score")]
