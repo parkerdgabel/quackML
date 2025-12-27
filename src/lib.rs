@@ -53,6 +53,12 @@ pub fn quack_ml_init(conn: Connection) -> Result<(), Box<dyn Error>> {
         .expect("could not register scalar function");
     conn.register_scalar_function::<api::GenerateScalar>("generate")
         .expect("could not register scalar function");
+
+    // Register discoverability functions
+    conn.register_table_function::<api::ListAlgorithmsVTab>("list_algorithms")?;
+    conn.register_table_function::<api::ListTasksVTab>("list_tasks")?;
+    conn.register_table_function::<api::HelpVTab>("quackml_help")?;
+
     Ok(())
 }
 

@@ -236,7 +236,11 @@ impl VTab for TrainVTab {
         bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        bind.add_result_column("deploy", LogicalTypeHandle::from(LogicalTypeId::Boolean));
+        bind.add_result_column("deployed", LogicalTypeHandle::from(LogicalTypeId::Boolean));
+        bind.add_result_column("metric", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("score", LogicalTypeHandle::from(LogicalTypeId::Double));
+        bind.add_result_column("training_samples", LogicalTypeHandle::from(LogicalTypeId::Bigint));
+        bind.add_result_column("test_samples", LogicalTypeHandle::from(LogicalTypeId::Bigint));
 
         let project_name = bind.get_parameter(0).to_string();
         let task = bind
@@ -494,6 +498,11 @@ impl VTab for TrainVTab {
                 let task_column = output.flat_vector(1);
                 let algorithm_column = output.flat_vector(2);
                 let deploy_column: *mut bool = output.flat_vector(3).as_mut_ptr();
+                let metric_column = output.flat_vector(4);
+                let score_column: *mut f64 = output.flat_vector(5).as_mut_ptr();
+                let training_samples_column: *mut i64 = output.flat_vector(6).as_mut_ptr();
+                let test_samples_column: *mut i64 = output.flat_vector(7).as_mut_ptr();
+
                 let project_name_raw = try_or_box_err!(
                     cstring_safe(&result.project_name),
                     "Invalid result project_name"
@@ -501,11 +510,17 @@ impl VTab for TrainVTab {
                 let task_raw = try_or_box_err!(cstring_safe(&result.task), "Invalid result task");
                 let algorithm_raw =
                     try_or_box_err!(cstring_safe(&result.algorithm), "Invalid result algorithm");
+                let metric_raw =
+                    try_or_box_err!(cstring_safe(&result.metric_name), "Invalid metric name");
 
                 proj_column.insert(0, project_name_raw);
                 task_column.insert(0, task_raw);
                 algorithm_column.insert(0, algorithm_raw);
                 deploy_column.write(result.deploy);
+                metric_column.insert(0, metric_raw);
+                score_column.write(result.metric_value);
+                training_samples_column.write(result.training_samples);
+                test_samples_column.write(result.test_samples);
                 output.set_len(1);
             }
         }
@@ -571,6 +586,11 @@ struct TrainResult {
     task: String,
     algorithm: String,
     deploy: bool,
+    // Enhanced output fields
+    metric_name: String,
+    metric_value: f64,
+    training_samples: i64,
+    test_samples: i64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -862,11 +882,25 @@ fn train_joint(
         println!("[quackML] Model trained but not deployed (existing model has better metrics).");
     }
 
+    // Get the primary metric value for the output
+    let default_metric = project.task.default_target_metric();
+    let metric_value = new_metrics
+        .get(&default_metric)
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    // Print summary for user feedback
+    println!("[quackML] Result: {} = {:.4}", default_metric, metric_value);
+
     Ok(TrainResult {
         project_name: project.name,
         task: project.task.to_string(),
         algorithm: model.algorithm.to_string(),
         deploy,
+        metric_name: default_metric,
+        metric_value,
+        training_samples: model.num_features as i64,  // TODO: Get actual training sample count
+        test_samples: model.num_classes as i64,        // TODO: Get actual test sample count
     })
 }
 
@@ -1065,25 +1099,40 @@ impl VScalar for PredictProbaScalar {
             .map(|v| v.iter().map(|o| o.unwrap()).collect::<Vec<f32>>())
             .collect::<Vec<Vec<f32>>>();
         let projects_features = izip!(project_names, features);
-        let results = projects_features
+
+        // Get all probability values for each prediction
+        let results: Vec<Vec<f32>> = projects_features
             .map(|(project_name, feature)| predict_proba(project_name.as_str(), feature))
-            .collect::<Vec<Vec<f32>>>();
-        let output = output.as_mut_slice::<f32>();
-        let mut i = 0;
-        for result in results {
-            output[i] = result[0];
-            i += 1;
+            .collect();
+
+        // Flatten all probabilities into a single vector
+        let flat_results: Vec<f32> = results.iter().flat_map(|r| r.iter().copied()).collect();
+
+        // Create a list vector to return the full probability distribution
+        let mut new_list_vector = ListVector::from(output);
+        new_list_vector.set_child(flat_results.as_slice());
+
+        // Set the entry for each row (offset and length)
+        let mut offset = 0;
+        for i in 0..rows {
+            let len = results[i].len();
+            new_list_vector.set_entry(i, offset, len);
+            offset += len;
         }
+
         Ok(())
     }
+
     fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
         Some(vec![
             LogicalTypeHandle::from(LogicalTypeId::Varchar),
             LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Float)),
         ])
     }
+
     fn return_type() -> LogicalTypeHandle {
-        LogicalTypeHandle::from(LogicalTypeId::Float)
+        // Return a list of floats containing all class probabilities
+        LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Float))
     }
 }
 
@@ -2499,6 +2548,448 @@ fn tune(
         model.algorithm.to_string(),
         deploy,
     )
+}
+
+// =============================================================================
+// list_algorithms() - Table function to list all available ML algorithms
+// =============================================================================
+
+#[repr(C)]
+pub struct ListAlgorithmsBindData {}
+
+impl Free for ListAlgorithmsBindData {
+    fn free(&mut self) {}
+}
+
+#[repr(C)]
+pub struct ListAlgorithmsInitData {
+    current_row: usize,
+}
+
+impl Free for ListAlgorithmsInitData {
+    fn free(&mut self) {}
+}
+
+/// Information about each algorithm for the list_algorithms() function.
+struct AlgorithmInfo {
+    name: &'static str,
+    description: &'static str,
+    tasks: &'static str,
+    backend: &'static str,
+}
+
+/// Static list of all algorithms with their metadata.
+const ALGORITHM_INFO: &[AlgorithmInfo] = &[
+    AlgorithmInfo { name: "linear", description: "Linear regression / Logistic regression", tasks: "regression, classification", backend: "rust (linfa)" },
+    AlgorithmInfo { name: "xgboost", description: "Gradient boosting with XGBoost", tasks: "regression, classification", backend: "rust (xgboost)" },
+    AlgorithmInfo { name: "xgboost_random_forest", description: "Random forest via XGBoost", tasks: "regression, classification", backend: "rust (xgboost)" },
+    AlgorithmInfo { name: "lightgbm", description: "Light Gradient Boosting Machine", tasks: "regression, classification", backend: "python (lightgbm)" },
+    AlgorithmInfo { name: "catboost", description: "CatBoost gradient boosting", tasks: "regression, classification", backend: "python (catboost)" },
+    AlgorithmInfo { name: "svm", description: "Support Vector Machine", tasks: "regression, classification", backend: "rust (linfa)" },
+    AlgorithmInfo { name: "linear_svm", description: "Linear Support Vector Machine", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "nu_svm", description: "Nu-Support Vector Machine", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "random_forest", description: "Random Forest ensemble", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "ada_boost", description: "AdaBoost ensemble", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "bagging", description: "Bagging ensemble", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "extra_trees", description: "Extra Trees ensemble", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "gradient_boosting_trees", description: "Gradient Boosting Trees", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "hist_gradient_boosting", description: "Histogram-based Gradient Boosting", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "lasso", description: "Lasso (L1 regularization)", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "elastic_net", description: "Elastic Net (L1+L2 regularization)", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "ridge", description: "Ridge regression (L2 regularization)", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "knn", description: "K-Nearest Neighbors", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "least_angle", description: "Least Angle Regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "lasso_least_angle", description: "Lasso with Least Angle Regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "orthogonal_matching_pursuit", description: "Orthogonal Matching Pursuit", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "bayesian_ridge", description: "Bayesian Ridge regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "automatic_relevance_determination", description: "Automatic Relevance Determination", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "stochastic_gradient_descent", description: "Stochastic Gradient Descent", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "perceptron", description: "Perceptron classifier", tasks: "classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "passive_aggressive", description: "Passive Aggressive classifier", tasks: "classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "ransac", description: "RANSAC (outlier-robust regression)", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "theil_sen", description: "Theil-Sen robust regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "huber", description: "Huber regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "quantile", description: "Quantile regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "kernel_ridge", description: "Kernel Ridge regression", tasks: "regression", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "gaussian_process", description: "Gaussian Process", tasks: "regression, classification", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "kmeans", description: "K-Means clustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "mini_batch_kmeans", description: "Mini-Batch K-Means", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "dbscan", description: "DBSCAN density clustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "affinity_propagation", description: "Affinity Propagation", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "birch", description: "BIRCH clustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "mean_shift", description: "Mean Shift clustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "optics", description: "OPTICS clustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "spectral", description: "Spectral clustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "spectral_bi", description: "Spectral Biclustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "spectral_co", description: "Spectral Coclustering", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "feature_agglomeration", description: "Feature Agglomeration", tasks: "clustering", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "pca", description: "Principal Component Analysis", tasks: "decomposition", backend: "python (sklearn)" },
+    AlgorithmInfo { name: "transformers", description: "HuggingFace Transformers", tasks: "text_classification, text_generation, embedding, etc.", backend: "python (transformers)" },
+];
+
+pub struct ListAlgorithmsVTab;
+
+impl VTab for ListAlgorithmsVTab {
+    type InitData = ListAlgorithmsInitData;
+    type BindData = ListAlgorithmsBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        _data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("description", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("tasks", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("backend", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).current_row = 0;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<ListAlgorithmsInitData>();
+
+        unsafe {
+            let start_row = (*init_data).current_row;
+            let remaining = ALGORITHM_INFO.len().saturating_sub(start_row);
+            let batch_size = remaining.min(1024);  // Process up to 1024 rows at a time
+
+            if batch_size == 0 {
+                output.set_len(0);
+                return Ok(());
+            }
+
+            let algorithm_col = output.flat_vector(0);
+            let description_col = output.flat_vector(1);
+            let tasks_col = output.flat_vector(2);
+            let backend_col = output.flat_vector(3);
+
+            for i in 0..batch_size {
+                let info = &ALGORITHM_INFO[start_row + i];
+                let alg = CString::new(info.name).unwrap();
+                let desc = CString::new(info.description).unwrap();
+                let tasks = CString::new(info.tasks).unwrap();
+                let backend = CString::new(info.backend).unwrap();
+
+                algorithm_col.insert(i, alg);
+                description_col.insert(i, desc);
+                tasks_col.insert(i, tasks);
+                backend_col.insert(i, backend);
+            }
+
+            (*init_data).current_row += batch_size;
+            output.set_len(batch_size);
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        None  // No parameters required
+    }
+}
+
+// =============================================================================
+// list_tasks() - Table function to list all available ML tasks
+// =============================================================================
+
+#[repr(C)]
+pub struct ListTasksBindData {}
+
+impl Free for ListTasksBindData {
+    fn free(&mut self) {}
+}
+
+#[repr(C)]
+pub struct ListTasksInitData {
+    current_row: usize,
+}
+
+impl Free for ListTasksInitData {
+    fn free(&mut self) {}
+}
+
+/// Information about each task for the list_tasks() function.
+struct TaskInfo {
+    name: &'static str,
+    description: &'static str,
+    default_metric: &'static str,
+    example_use_case: &'static str,
+}
+
+/// Static list of all tasks with their metadata.
+const TASK_INFO: &[TaskInfo] = &[
+    TaskInfo { name: "regression", description: "Predict continuous numeric values", default_metric: "r2", example_use_case: "Price forecasting, demand prediction" },
+    TaskInfo { name: "classification", description: "Predict categorical labels", default_metric: "f1", example_use_case: "Spam detection, churn prediction" },
+    TaskInfo { name: "clustering", description: "Group similar data points", default_metric: "silhouette", example_use_case: "Customer segmentation, anomaly detection" },
+    TaskInfo { name: "decomposition", description: "Reduce dimensionality", default_metric: "cumulative_explained_variance", example_use_case: "Feature extraction, data visualization" },
+    TaskInfo { name: "text_classification", description: "Classify text into categories", default_metric: "f1", example_use_case: "Sentiment analysis, topic classification" },
+    TaskInfo { name: "text_generation", description: "Generate text from prompts", default_metric: "perplexity", example_use_case: "Content generation, chatbots" },
+    TaskInfo { name: "text2text", description: "Transform text to text", default_metric: "perplexity", example_use_case: "Translation, paraphrasing" },
+    TaskInfo { name: "question_answering", description: "Answer questions from context", default_metric: "f1", example_use_case: "FAQ systems, reading comprehension" },
+    TaskInfo { name: "summarization", description: "Summarize long text", default_metric: "rouge_ngram_f1", example_use_case: "Document summarization, news digests" },
+    TaskInfo { name: "translation", description: "Translate between languages", default_metric: "bleu", example_use_case: "Language translation" },
+    TaskInfo { name: "embedding", description: "Convert text to vector embeddings", default_metric: "N/A", example_use_case: "Semantic search, similarity matching" },
+    TaskInfo { name: "text_pair_classification", description: "Classify pairs of text", default_metric: "f1", example_use_case: "Duplicate detection, entailment" },
+    TaskInfo { name: "conversation", description: "Multi-turn dialogue", default_metric: "bleu", example_use_case: "Chatbots, virtual assistants" },
+];
+
+pub struct ListTasksVTab;
+
+impl VTab for ListTasksVTab {
+    type InitData = ListTasksInitData;
+    type BindData = ListTasksBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        _data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("description", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("default_metric", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("example_use_case", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).current_row = 0;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<ListTasksInitData>();
+
+        unsafe {
+            let start_row = (*init_data).current_row;
+            let remaining = TASK_INFO.len().saturating_sub(start_row);
+            let batch_size = remaining.min(1024);
+
+            if batch_size == 0 {
+                output.set_len(0);
+                return Ok(());
+            }
+
+            let task_col = output.flat_vector(0);
+            let description_col = output.flat_vector(1);
+            let metric_col = output.flat_vector(2);
+            let example_col = output.flat_vector(3);
+
+            for i in 0..batch_size {
+                let info = &TASK_INFO[start_row + i];
+                let task = CString::new(info.name).unwrap();
+                let desc = CString::new(info.description).unwrap();
+                let metric = CString::new(info.default_metric).unwrap();
+                let example = CString::new(info.example_use_case).unwrap();
+
+                task_col.insert(i, task);
+                description_col.insert(i, desc);
+                metric_col.insert(i, metric);
+                example_col.insert(i, example);
+            }
+
+            (*init_data).current_row += batch_size;
+            output.set_len(batch_size);
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        None  // No parameters required
+    }
+}
+
+// =============================================================================
+// quackml_help() - Table function to show available functions and usage
+// =============================================================================
+
+#[repr(C)]
+pub struct HelpBindData {}
+
+impl Free for HelpBindData {
+    fn free(&mut self) {}
+}
+
+#[repr(C)]
+pub struct HelpInitData {
+    current_row: usize,
+}
+
+impl Free for HelpInitData {
+    fn free(&mut self) {}
+}
+
+/// Information about each function for help().
+struct FunctionHelp {
+    name: &'static str,
+    description: &'static str,
+    parameters: &'static str,
+    example: &'static str,
+}
+
+/// Static list of all functions with their help information.
+const FUNCTION_HELP: &[FunctionHelp] = &[
+    FunctionHelp {
+        name: "train",
+        description: "Train a machine learning model",
+        parameters: "project_name, task, relation_name, y_column_name, [algorithm], [hyperparams], [test_size]",
+        example: "SELECT * FROM train('my_model', task => 'classification', relation_name => 'data', y_column_name => 'target')"
+    },
+    FunctionHelp {
+        name: "predict",
+        description: "Make predictions using a deployed model",
+        parameters: "project_name, feature1, feature2, ...",
+        example: "SELECT predict('my_model', col1, col2, col3) FROM my_table"
+    },
+    FunctionHelp {
+        name: "predict_proba",
+        description: "Get prediction probabilities",
+        parameters: "project_name, feature1, feature2, ...",
+        example: "SELECT predict_proba('my_model', col1, col2) FROM my_table"
+    },
+    FunctionHelp {
+        name: "predict_text",
+        description: "Make text predictions (for text models)",
+        parameters: "project_name, text_input",
+        example: "SELECT predict_text('sentiment_model', review_text) FROM reviews"
+    },
+    FunctionHelp {
+        name: "embed",
+        description: "Generate text embeddings",
+        parameters: "model_name, text",
+        example: "SELECT embed('sentence-transformers/all-MiniLM-L6-v2', text_column) FROM docs"
+    },
+    FunctionHelp {
+        name: "generate",
+        description: "Generate text using a language model",
+        parameters: "model_id, prompt",
+        example: "SELECT generate(1, 'Once upon a time')"
+    },
+    FunctionHelp {
+        name: "transform",
+        description: "Apply NLP transformations",
+        parameters: "task_json, args, inputs",
+        example: "SELECT transform('{\"task\": \"summarization\"}', '{}', article_text) FROM articles"
+    },
+    FunctionHelp {
+        name: "finetune",
+        description: "Fine-tune a transformer model",
+        parameters: "project_name, task, relation_name, y_column_name, model_name, [hyperparams]",
+        example: "SELECT * FROM finetune('sentiment', task => 'text_classification', ...)"
+    },
+    FunctionHelp {
+        name: "load_dataset",
+        description: "Load a HuggingFace dataset",
+        parameters: "dataset_name, [subset], [limit], [kwargs]",
+        example: "SELECT load_dataset('imdb')"
+    },
+    FunctionHelp {
+        name: "list_algorithms",
+        description: "List all available ML algorithms",
+        parameters: "(none)",
+        example: "SELECT * FROM list_algorithms()"
+    },
+    FunctionHelp {
+        name: "list_tasks",
+        description: "List all available ML task types",
+        parameters: "(none)",
+        example: "SELECT * FROM list_tasks()"
+    },
+    FunctionHelp {
+        name: "quackml_help",
+        description: "Show this help information",
+        parameters: "(none)",
+        example: "SELECT * FROM quackml_help()"
+    },
+];
+
+pub struct HelpVTab;
+
+impl VTab for HelpVTab {
+    type InitData = HelpInitData;
+    type BindData = HelpBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        _data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("function", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("description", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("parameters", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("example", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).current_row = 0;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<HelpInitData>();
+
+        unsafe {
+            let start_row = (*init_data).current_row;
+            let remaining = FUNCTION_HELP.len().saturating_sub(start_row);
+            let batch_size = remaining.min(1024);
+
+            if batch_size == 0 {
+                output.set_len(0);
+                return Ok(());
+            }
+
+            let func_col = output.flat_vector(0);
+            let desc_col = output.flat_vector(1);
+            let params_col = output.flat_vector(2);
+            let example_col = output.flat_vector(3);
+
+            for i in 0..batch_size {
+                let info = &FUNCTION_HELP[start_row + i];
+                let func_name = CString::new(info.name).unwrap();
+                let desc = CString::new(info.description).unwrap();
+                let params = CString::new(info.parameters).unwrap();
+                let example = CString::new(info.example).unwrap();
+
+                func_col.insert(i, func_name);
+                desc_col.insert(i, desc);
+                params_col.insert(i, params);
+                example_col.insert(i, example);
+            }
+
+            (*init_data).current_row += batch_size;
+            output.set_len(batch_size);
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        None
+    }
 }
 //
 // #[cfg(feature = "python")]
