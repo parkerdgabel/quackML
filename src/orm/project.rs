@@ -163,3 +163,137 @@ impl Project {
         Snapshot::find_last_by_project_id(self.id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn create_test_project() -> Project {
+        Project {
+            id: 1,
+            name: "test_project".to_string(),
+            task: Task::classification,
+            created_at: Utc.with_ymd_and_hms(2024, 1, 15, 10, 30, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_project_display() {
+        let project = create_test_project();
+        let display = format!("{}", project);
+
+        assert!(display.contains("Project"));
+        assert!(display.contains("id: 1"));
+        assert!(display.contains("name: test_project"));
+        assert!(display.contains("task: classification"));
+    }
+
+    #[test]
+    fn test_project_display_with_different_tasks() {
+        let tasks = vec![
+            Task::regression,
+            Task::classification,
+            Task::text_classification,
+            Task::embedding,
+        ];
+
+        for task in tasks {
+            let project = Project {
+                id: 42,
+                name: "ml_project".to_string(),
+                task,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            let display = format!("{}", project);
+            assert!(display.contains("id: 42"));
+            assert!(display.contains("ml_project"));
+        }
+    }
+
+    #[test]
+    fn test_project_clone() {
+        let project = create_test_project();
+        let cloned = project.clone();
+
+        assert_eq!(project.id, cloned.id);
+        assert_eq!(project.name, cloned.name);
+        assert_eq!(project.task, cloned.task);
+        assert_eq!(project.created_at, cloned.created_at);
+        assert_eq!(project.updated_at, cloned.updated_at);
+    }
+
+    #[test]
+    fn test_project_debug() {
+        let project = create_test_project();
+        let debug = format!("{:?}", project);
+
+        assert!(debug.contains("Project"));
+        assert!(debug.contains("id"));
+        assert!(debug.contains("name"));
+        assert!(debug.contains("task"));
+    }
+
+    #[test]
+    fn test_project_fields_accessible() {
+        let project = create_test_project();
+
+        assert_eq!(project.id, 1);
+        assert_eq!(project.name, "test_project");
+        assert_eq!(project.task, Task::classification);
+    }
+
+    #[test]
+    fn test_project_with_long_name() {
+        let long_name = "a".repeat(1000);
+        let project = Project {
+            id: 1,
+            name: long_name.clone(),
+            task: Task::regression,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(project.name, long_name);
+        let display = format!("{}", project);
+        assert!(display.contains(&long_name));
+    }
+
+    #[test]
+    fn test_project_with_special_characters_in_name() {
+        let special_name = "project-with_special.chars!@#$%";
+        let project = Project {
+            id: 1,
+            name: special_name.to_string(),
+            task: Task::classification,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        assert_eq!(project.name, special_name);
+    }
+
+    #[test]
+    fn test_project_id_types() {
+        // Test with large IDs
+        let project = Project {
+            id: i64::MAX,
+            name: "max_id_project".to_string(),
+            task: Task::regression,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(project.id, i64::MAX);
+
+        let project = Project {
+            id: 0,
+            name: "zero_id_project".to_string(),
+            task: Task::regression,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(project.id, 0);
+    }
+}
