@@ -59,6 +59,10 @@ pub fn quack_ml_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     conn.register_table_function::<api::ListTasksVTab>("list_tasks")?;
     conn.register_table_function::<api::HelpVTab>("quackml_help")?;
 
+    // Register model introspection functions
+    conn.register_table_function::<api::DeployedModelsVTab>("deployed_models")?;
+    conn.register_table_function::<api::TrainedModelsVTab>("trained_models")?;
+
     Ok(())
 }
 

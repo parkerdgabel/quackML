@@ -2918,6 +2918,18 @@ const FUNCTION_HELP: &[FunctionHelp] = &[
         parameters: "(none)",
         example: "SELECT * FROM quackml_help()"
     },
+    FunctionHelp {
+        name: "deployed_models",
+        description: "Show currently deployed models",
+        parameters: "(none)",
+        example: "SELECT * FROM deployed_models()"
+    },
+    FunctionHelp {
+        name: "trained_models",
+        description: "Show all trained models with metrics",
+        parameters: "(none)",
+        example: "SELECT * FROM trained_models()"
+    },
 ];
 
 pub struct HelpVTab;
@@ -2983,6 +2995,280 @@ impl VTab for HelpVTab {
 
             (*init_data).current_row += batch_size;
             output.set_len(batch_size);
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        None
+    }
+}
+
+// =============================================================================
+// deployed_models() - Table function to show currently deployed models
+// =============================================================================
+
+#[repr(C)]
+pub struct DeployedModelsBindData {}
+
+impl Free for DeployedModelsBindData {
+    fn free(&mut self) {}
+}
+
+#[repr(C)]
+pub struct DeployedModelsInitData {
+    done: bool,
+}
+
+impl Free for DeployedModelsInitData {
+    fn free(&mut self) {}
+}
+
+pub struct DeployedModelsVTab;
+
+impl VTab for DeployedModelsVTab {
+    type InitData = DeployedModelsInitData;
+    type BindData = DeployedModelsBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        _data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("model_id", LogicalTypeHandle::from(LogicalTypeId::Bigint));
+        bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("deployed_at", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("metrics", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).done = false;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<DeployedModelsInitData>();
+
+        unsafe {
+            if (*init_data).done {
+                output.set_len(0);
+                return Ok(());
+            }
+            (*init_data).done = true;
+
+            // Query the database for deployed models
+            let results: Vec<(String, i64, String, String, String, String)> = context::run(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT
+                        p.name as project,
+                        m.id as model_id,
+                        p.task,
+                        m.algorithm,
+                        CAST(d.created_at AS VARCHAR) as deployed_at,
+                        COALESCE(m.metrics, '{}') as metrics
+                    FROM quackml.deployments d
+                    JOIN quackml.projects p ON d.project_id = p.id
+                    JOIN quackml.models m ON d.model_id = m.id
+                    WHERE d.id IN (
+                        SELECT MAX(id) FROM quackml.deployments GROUP BY project_id
+                    )
+                    ORDER BY d.created_at DESC"
+                )?;
+
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })?;
+
+                let mut results = Vec::new();
+                for row in rows {
+                    if let Ok(r) = row {
+                        results.push(r);
+                    }
+                }
+                Ok(results)
+            }).unwrap_or_default();
+
+            if results.is_empty() {
+                output.set_len(0);
+                return Ok(());
+            }
+
+            let project_col = output.flat_vector(0);
+            let model_id_col: *mut i64 = output.flat_vector(1).as_mut_ptr();
+            let task_col = output.flat_vector(2);
+            let algorithm_col = output.flat_vector(3);
+            let deployed_at_col = output.flat_vector(4);
+            let metrics_col = output.flat_vector(5);
+
+            for (i, (project, model_id, task, algorithm, deployed_at, metrics)) in results.iter().enumerate() {
+                project_col.insert(i, CString::new(project.as_str()).unwrap());
+                model_id_col.add(i).write(*model_id);
+                task_col.insert(i, CString::new(task.as_str()).unwrap());
+                algorithm_col.insert(i, CString::new(algorithm.as_str()).unwrap());
+                deployed_at_col.insert(i, CString::new(deployed_at.as_str()).unwrap());
+                metrics_col.insert(i, CString::new(metrics.as_str()).unwrap());
+            }
+
+            output.set_len(results.len());
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        None
+    }
+}
+
+// =============================================================================
+// trained_models() - Table function to show all trained models
+// =============================================================================
+
+#[repr(C)]
+pub struct TrainedModelsBindData {}
+
+impl Free for TrainedModelsBindData {
+    fn free(&mut self) {}
+}
+
+#[repr(C)]
+pub struct TrainedModelsInitData {
+    done: bool,
+}
+
+impl Free for TrainedModelsInitData {
+    fn free(&mut self) {}
+}
+
+pub struct TrainedModelsVTab;
+
+impl VTab for TrainedModelsVTab {
+    type InitData = TrainedModelsInitData;
+    type BindData = TrainedModelsBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        _data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("project", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("model_id", LogicalTypeHandle::from(LogicalTypeId::Bigint));
+        bind.add_result_column("task", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("algorithm", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("status", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("created_at", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("metrics", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("is_deployed", LogicalTypeHandle::from(LogicalTypeId::Boolean));
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).done = false;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<TrainedModelsInitData>();
+
+        unsafe {
+            if (*init_data).done {
+                output.set_len(0);
+                return Ok(());
+            }
+            (*init_data).done = true;
+
+            // Query the database for all trained models
+            let results: Vec<(String, i64, String, String, String, String, String, bool)> = context::run(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT
+                        p.name as project,
+                        m.id as model_id,
+                        p.task,
+                        m.algorithm,
+                        m.status,
+                        CAST(m.created_at AS VARCHAR) as created_at,
+                        COALESCE(m.metrics, '{}') as metrics,
+                        EXISTS(
+                            SELECT 1 FROM quackml.deployments d
+                            WHERE d.model_id = m.id
+                            AND d.id = (SELECT MAX(id) FROM quackml.deployments WHERE project_id = p.id)
+                        ) as is_deployed
+                    FROM quackml.models m
+                    JOIN quackml.projects p ON m.project_id = p.id
+                    ORDER BY m.created_at DESC"
+                )?;
+
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, bool>(7)?,
+                    ))
+                })?;
+
+                let mut results = Vec::new();
+                for row in rows {
+                    if let Ok(r) = row {
+                        results.push(r);
+                    }
+                }
+                Ok(results)
+            }).unwrap_or_default();
+
+            if results.is_empty() {
+                output.set_len(0);
+                return Ok(());
+            }
+
+            let project_col = output.flat_vector(0);
+            let model_id_col: *mut i64 = output.flat_vector(1).as_mut_ptr();
+            let task_col = output.flat_vector(2);
+            let algorithm_col = output.flat_vector(3);
+            let status_col = output.flat_vector(4);
+            let created_at_col = output.flat_vector(5);
+            let metrics_col = output.flat_vector(6);
+            let is_deployed_col: *mut bool = output.flat_vector(7).as_mut_ptr();
+
+            for (i, (project, model_id, task, algorithm, status, created_at, metrics, is_deployed)) in results.iter().enumerate() {
+                project_col.insert(i, CString::new(project.as_str()).unwrap());
+                model_id_col.add(i).write(*model_id);
+                task_col.insert(i, CString::new(task.as_str()).unwrap());
+                algorithm_col.insert(i, CString::new(algorithm.as_str()).unwrap());
+                status_col.insert(i, CString::new(status.as_str()).unwrap());
+                created_at_col.insert(i, CString::new(created_at.as_str()).unwrap());
+                metrics_col.insert(i, CString::new(metrics.as_str()).unwrap());
+                is_deployed_col.add(i).write(*is_deployed);
+            }
+
+            output.set_len(results.len());
         }
         Ok(())
     }
