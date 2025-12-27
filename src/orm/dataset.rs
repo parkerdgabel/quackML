@@ -684,3 +684,226 @@ pub fn load_datasets() {
         std::fs::remove_file(file_path).unwrap(); // Clean up temporary file
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a test dataset
+    fn create_test_dataset() -> Dataset {
+        // 10 samples, 3 features each
+        let x_train = vec![
+            1.0, 2.0, 3.0,  // sample 0
+            4.0, 5.0, 6.0,  // sample 1
+            7.0, 8.0, 9.0,  // sample 2
+            10.0, 11.0, 12.0, // sample 3
+            13.0, 14.0, 15.0, // sample 4
+            16.0, 17.0, 18.0, // sample 5
+            19.0, 20.0, 21.0, // sample 6
+            22.0, 23.0, 24.0, // sample 7
+        ];
+        let y_train = vec![0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+
+        let x_test = vec![
+            25.0, 26.0, 27.0, // sample 8
+            28.0, 29.0, 30.0, // sample 9
+        ];
+        let y_test = vec![0.0, 1.0];
+
+        Dataset {
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            num_features: 3,
+            num_labels: 1,
+            num_rows: 10,
+            num_train_rows: 8,
+            num_test_rows: 2,
+            num_distinct_labels: 2,
+        }
+    }
+
+    #[test]
+    fn test_dataset_display() {
+        let dataset = create_test_dataset();
+        let display = format!("{}", dataset);
+
+        assert!(display.contains("num_features: 3"));
+        assert!(display.contains("num_labels: 1"));
+        assert!(display.contains("num_distinct_labels: 2"));
+        assert!(display.contains("num_rows: 10"));
+        assert!(display.contains("num_train_rows: 8"));
+        assert!(display.contains("num_test_rows: 2"));
+    }
+
+    #[test]
+    fn test_dataset_fold_basic() {
+        let dataset = create_test_dataset();
+
+        // 2-fold cross-validation
+        let fold0 = dataset.fold(0, 2);
+        let fold1 = dataset.fold(1, 2);
+
+        // Each fold should have 4 test samples (8 / 2)
+        assert_eq!(fold0.num_test_rows, 4);
+        assert_eq!(fold1.num_test_rows, 4);
+
+        // Each fold should have 4 train samples
+        assert_eq!(fold0.num_train_rows, 4);
+        assert_eq!(fold1.num_train_rows, 4);
+
+        // Features should be preserved
+        assert_eq!(fold0.num_features, 3);
+        assert_eq!(fold1.num_features, 3);
+    }
+
+    #[test]
+    fn test_dataset_fold_data_integrity() {
+        let dataset = create_test_dataset();
+
+        // First fold (k=0) should take first 4 samples as test
+        let fold0 = dataset.fold(0, 2);
+
+        // Test data should be first 4 samples (indices 0-3)
+        assert_eq!(fold0.x_test.len(), 4 * 3); // 4 samples * 3 features
+        assert_eq!(fold0.y_test.len(), 4);
+
+        // First test sample should be [1.0, 2.0, 3.0]
+        assert_eq!(fold0.x_test[0], 1.0);
+        assert_eq!(fold0.x_test[1], 2.0);
+        assert_eq!(fold0.x_test[2], 3.0);
+
+        // Train data should be remaining 4 samples (indices 4-7)
+        assert_eq!(fold0.x_train.len(), 4 * 3);
+        assert_eq!(fold0.y_train.len(), 4);
+    }
+
+    #[test]
+    fn test_dataset_fold_5_folds() {
+        // Create dataset with 10 training samples
+        let x_train: Vec<f32> = (0..30).map(|x| x as f32).collect();
+        let y_train: Vec<f32> = (0..10).map(|x| (x % 2) as f32).collect();
+
+        let dataset = Dataset {
+            x_train,
+            y_train,
+            x_test: vec![],
+            y_test: vec![],
+            num_features: 3,
+            num_labels: 1,
+            num_rows: 10,
+            num_train_rows: 10,
+            num_test_rows: 0,
+            num_distinct_labels: 2,
+        };
+
+        // 5-fold cross-validation
+        for k in 0..5 {
+            let fold = dataset.fold(k, 5);
+
+            // Each fold should have 2 test samples (10 / 5)
+            assert_eq!(fold.num_test_rows, 2, "Fold {} should have 2 test rows", k);
+
+            // Each fold should have 8 train samples (10 - 2)
+            assert_eq!(fold.num_train_rows, 8, "Fold {} should have 8 train rows", k);
+
+            // Verify data sizes
+            assert_eq!(fold.x_test.len(), 2 * 3);
+            assert_eq!(fold.y_test.len(), 2);
+            assert_eq!(fold.x_train.len(), 8 * 3);
+            assert_eq!(fold.y_train.len(), 8);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Number of folds must be at least 2")]
+    fn test_dataset_fold_invalid_folds() {
+        let dataset = create_test_dataset();
+        // Should panic with less than 2 folds
+        let _ = dataset.fold(0, 1);
+    }
+
+    #[test]
+    fn test_dataset_fold_preserves_metadata() {
+        let dataset = create_test_dataset();
+        let fold = dataset.fold(0, 2);
+
+        // Metadata should be preserved
+        assert_eq!(fold.num_features, dataset.num_features);
+        assert_eq!(fold.num_labels, dataset.num_labels);
+        assert_eq!(fold.num_distinct_labels, dataset.num_distinct_labels);
+    }
+
+    #[test]
+    fn test_text_classification_dataset_display() {
+        let dataset = TextClassificationDataset {
+            text_train: vec!["hello".to_string(), "world".to_string()],
+            class_train: vec!["pos".to_string(), "neg".to_string()],
+            text_test: vec!["test".to_string()],
+            class_test: vec!["pos".to_string()],
+            num_features: 1,
+            num_labels: 1,
+            num_rows: 3,
+            num_train_rows: 2,
+            num_test_rows: 1,
+            num_distinct_labels: 2,
+        };
+
+        let display = format!("{}", dataset);
+        assert!(display.contains("num_distinct_labels: 2"));
+        assert!(display.contains("num_rows: 3"));
+        assert!(display.contains("num_train_rows: 2"));
+        assert!(display.contains("num_test_rows: 1"));
+    }
+
+    #[test]
+    fn test_text_summarization_dataset_display() {
+        let dataset = TextSummarizationDataset {
+            text_train: vec!["long text".to_string()],
+            summary_train: vec!["short".to_string()],
+            text_test: vec!["another text".to_string()],
+            summary_test: vec!["brief".to_string()],
+            num_features: 1,
+            num_rows: 2,
+            num_train_rows: 1,
+            num_test_rows: 1,
+        };
+
+        let display = format!("{}", dataset);
+        assert!(display.contains("num_rows: 2"));
+        assert!(display.contains("num_train_rows: 1"));
+        assert!(display.contains("num_test_rows: 1"));
+    }
+
+    #[test]
+    fn test_text_dataset_type_num_features() {
+        let text_class = TextDatasetType::TextClassification(TextClassificationDataset {
+            text_train: vec![],
+            class_train: vec![],
+            text_test: vec![],
+            class_test: vec![],
+            num_features: 5,
+            num_labels: 1,
+            num_rows: 0,
+            num_train_rows: 0,
+            num_test_rows: 0,
+            num_distinct_labels: 2,
+        });
+
+        assert_eq!(text_class.num_features(), 5);
+
+        let text_summ = TextDatasetType::TextSummarization(TextSummarizationDataset {
+            text_train: vec![],
+            summary_train: vec![],
+            text_test: vec![],
+            summary_test: vec![],
+            num_features: 3,
+            num_rows: 0,
+            num_train_rows: 0,
+            num_test_rows: 0,
+        });
+
+        assert_eq!(text_summ.num_features(), 3);
+    }
+}

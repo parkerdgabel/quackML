@@ -107,3 +107,7 @@ xgboost = { git = "https://github.com/postgresml/rust-xgboost", branch = "master
 [lib]
 crate-type = ["cdylib"]
 name = "quack_ml"
+
+[dev-dependencies]
+approx = "0.5"
+pretty_assertions = "1.4"

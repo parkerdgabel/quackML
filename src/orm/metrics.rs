@@ -258,7 +258,7 @@ mod test {
     use ndarray::array;
 
     #[test]
-    fn test_confusion_matrix_multiclass() {
+    fn test_confusion_matrix_multiclass_perfect() {
         let ground_truth = array![1, 2, 3, 4, 4];
         let y_hat = array![1, 2, 3, 4, 4];
 
@@ -274,5 +274,208 @@ mod test {
         assert_eq!(mat.matrix[(3, 3)], 2.0);
         assert_eq!(f1, 1.0);
         assert_eq!(f1_micro, 1.0);
+    }
+
+    #[test]
+    fn test_confusion_matrix_binary_perfect() {
+        let ground_truth = array![0, 0, 1, 1, 1];
+        let y_hat = array![0, 0, 1, 1, 1];
+
+        let mat = ConfusionMatrix::new(
+            &ArrayView1::from(&ground_truth),
+            &ArrayView1::from(&y_hat),
+            2,
+        );
+
+        assert_eq!(mat.accuracy(), 1.0);
+        assert_eq!(mat.precision(), 1.0);
+        assert_eq!(mat.recall(), 1.0);
+        assert_eq!(mat.f1(Average::Binary), 1.0);
+        assert_eq!(mat.f1(Average::Micro), 1.0);
+    }
+
+    #[test]
+    fn test_confusion_matrix_binary_imperfect() {
+        // Ground truth: [0, 0, 1, 1, 1]
+        // Predictions:  [0, 1, 0, 1, 1]
+        // TP=2, FP=1, FN=1, TN=1
+        let ground_truth = array![0, 0, 1, 1, 1];
+        let y_hat = array![0, 1, 0, 1, 1];
+
+        let mat = ConfusionMatrix::new(
+            &ArrayView1::from(&ground_truth),
+            &ArrayView1::from(&y_hat),
+            2,
+        );
+
+        // Accuracy = (TP + TN) / total = (2 + 1) / 5 = 0.6
+        assert!((mat.accuracy() - 0.6).abs() < 1e-6);
+
+        // Precision = TP / (TP + FP) = 2 / (2 + 1) = 0.666...
+        assert!((mat.precision() - 2.0 / 3.0).abs() < 1e-6);
+
+        // Recall = TP / (TP + FN) = 2 / (2 + 1) = 0.666...
+        assert!((mat.recall() - 2.0 / 3.0).abs() < 1e-6);
+
+        // F1 = 2 * (precision * recall) / (precision + recall)
+        let expected_f1 = 2.0 * (2.0 / 3.0) * (2.0 / 3.0) / (2.0 / 3.0 + 2.0 / 3.0);
+        assert!((mat.f1(Average::Binary) - expected_f1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_confusion_matrix_multiclass_imperfect() {
+        // 3 classes: 0, 1, 2
+        // Ground truth: [0, 0, 1, 1, 2, 2]
+        // Predictions:  [0, 1, 1, 2, 2, 0]  (3 correct, 3 wrong)
+        let ground_truth = array![0, 0, 1, 1, 2, 2];
+        let y_hat = array![0, 1, 1, 2, 2, 0];
+
+        let mat = ConfusionMatrix::new(
+            &ArrayView1::from(&ground_truth),
+            &ArrayView1::from(&y_hat),
+            3,
+        );
+
+        // Accuracy = 3/6 = 0.5
+        assert!((mat.accuracy() - 0.5).abs() < 1e-6);
+
+        // F1 micro and macro should be <= 1.0 and >= 0.0
+        let f1_micro = mat.f1(Average::Micro);
+        let f1_macro = mat.f1(Average::Macro);
+
+        assert!(f1_micro >= 0.0 && f1_micro <= 1.0);
+        assert!(f1_macro >= 0.0 && f1_macro <= 1.0);
+    }
+
+    #[test]
+    fn test_confusion_matrix_all_wrong() {
+        // All predictions are wrong
+        let ground_truth = array![0, 0, 1, 1];
+        let y_hat = array![1, 1, 0, 0];
+
+        let mat = ConfusionMatrix::new(
+            &ArrayView1::from(&ground_truth),
+            &ArrayView1::from(&y_hat),
+            2,
+        );
+
+        assert_eq!(mat.accuracy(), 0.0);
+        // Precision and recall are 0 when there are no true positives
+        assert_eq!(mat.precision(), 0.0);
+        assert_eq!(mat.recall(), 0.0);
+    }
+
+    #[test]
+    fn test_calculate_r2_perfect() {
+        let y_true = array![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y_pred = array![1.0, 2.0, 3.0, 4.0, 5.0];
+
+        let r2 = calculate_r2(&y_true.view(), &y_pred.view());
+        assert!((r2 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_calculate_r2_good_fit() {
+        // y = 2x, predictions close to actual
+        let y_true = array![2.0, 4.0, 6.0, 8.0, 10.0];
+        let y_pred = array![2.1, 3.9, 6.2, 7.8, 10.1];
+
+        let r2 = calculate_r2(&y_true.view(), &y_pred.view());
+        // R2 should be close to 1 for good predictions
+        assert!(r2 > 0.95);
+    }
+
+    #[test]
+    fn test_calculate_r2_poor_fit() {
+        let y_true = array![1.0, 2.0, 3.0, 4.0, 5.0];
+        // Predictions are just the mean (3.0) - should give R2 = 0
+        let y_pred = array![3.0, 3.0, 3.0, 3.0, 3.0];
+
+        let r2 = calculate_r2(&y_true.view(), &y_pred.view());
+        assert!((r2 - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_calculate_r2_negative() {
+        // Predictions worse than mean - R2 can be negative
+        let y_true = array![1.0, 2.0, 3.0, 4.0, 5.0];
+        let y_pred = array![5.0, 4.0, 3.0, 2.0, 1.0]; // Inverted predictions
+
+        let r2 = calculate_r2(&y_true.view(), &y_pred.view());
+        assert!(r2 < 0.0);
+    }
+
+    #[test]
+    fn test_log_loss_perfect_predictions() {
+        let y_true = array![1.0, 0.0, 1.0, 0.0];
+        let y_pred = array![0.99, 0.01, 0.99, 0.01]; // Near-perfect predictions
+
+        let loss = log_loss(&y_true.view(), &y_pred.view(), 1e-15);
+        assert!(loss < 0.1); // Should be very low
+    }
+
+    #[test]
+    fn test_log_loss_poor_predictions() {
+        let y_true = array![1.0, 0.0, 1.0, 0.0];
+        let y_pred = array![0.5, 0.5, 0.5, 0.5]; // Random guessing
+
+        let loss = log_loss(&y_true.view(), &y_pred.view(), 1e-15);
+        // Log loss for random guessing should be around -ln(0.5) ≈ 0.693
+        assert!((loss - 0.693).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_log_loss_inverted_predictions() {
+        let y_true = array![1.0, 0.0, 1.0, 0.0];
+        let y_pred = array![0.01, 0.99, 0.01, 0.99]; // Inverted predictions
+
+        let loss = log_loss(&y_true.view(), &y_pred.view(), 1e-15);
+        assert!(loss > 2.0); // Should be very high
+    }
+
+    #[test]
+    fn test_roc_auc_perfect() {
+        let y_true = array![true, true, false, false];
+        let y_score = array![0.9, 0.8, 0.3, 0.1]; // Perfect ranking
+
+        let auc = roc_auc(&y_true.view(), &y_score.view());
+        assert!((auc - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_roc_auc_random() {
+        // Random predictions should give AUC around 0.5
+        let y_true = array![true, false, true, false, true, false];
+        let y_score = array![0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+
+        let auc = roc_auc(&y_true.view(), &y_score.view());
+        assert!((auc - 0.5).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_roc_auc_inverted() {
+        let y_true = array![true, true, false, false];
+        let y_score = array![0.1, 0.2, 0.8, 0.9]; // Inverted ranking
+
+        let auc = roc_auc(&y_true.view(), &y_score.view());
+        assert!(auc < 0.1); // Should be close to 0
+    }
+
+    #[test]
+    fn test_average_enum_equality() {
+        assert_eq!(Average::Micro, Average::Micro);
+        assert_eq!(Average::Macro, Average::Macro);
+        assert_eq!(Average::Binary, Average::Binary);
+        assert_ne!(Average::Micro, Average::Macro);
+    }
+
+    #[test]
+    fn test_confusion_matrix_metrics_new() {
+        // TP=10, FP=5, FN=3, TN=82
+        let metrics = ConfusionMatrixMetrics::new((10.0, 5.0, 3.0, 82.0));
+        assert_eq!(metrics.tp, 10.0);
+        assert_eq!(metrics.fp, 5.0);
+        assert_eq!(metrics.fn_, 3.0);
+        assert_eq!(metrics.tn, 82.0);
     }
 }
