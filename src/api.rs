@@ -2930,6 +2930,12 @@ const FUNCTION_HELP: &[FunctionHelp] = &[
         parameters: "(none)",
         example: "SELECT * FROM trained_models()"
     },
+    FunctionHelp {
+        name: "validate_train",
+        description: "Dry-run validation before training (checks parameters without training)",
+        parameters: "project_name, [task], [relation_name], [y_column_name], [algorithm]",
+        example: "SELECT * FROM validate_train('my_model', task => 'classification', relation_name => 'data', y_column_name => 'target')"
+    },
 ];
 
 pub struct HelpVTab;
@@ -3001,6 +3007,271 @@ impl VTab for HelpVTab {
 
     fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
         None
+    }
+}
+
+// =============================================================================
+// validate_train() - Dry-run validation for train parameters
+// =============================================================================
+
+#[repr(C)]
+pub struct ValidateTrainBindData {
+    project_name: *mut c_char,
+    task: *mut c_char,
+    relation_name: *mut c_char,
+    y_column_name: *mut c_char,
+    algorithm: *mut c_char,
+}
+
+impl Free for ValidateTrainBindData {
+    fn free(&mut self) {
+        unsafe {
+            if !self.project_name.is_null() {
+                drop(CString::from_raw(self.project_name));
+            }
+            if !self.task.is_null() {
+                drop(CString::from_raw(self.task));
+            }
+            if !self.relation_name.is_null() {
+                drop(CString::from_raw(self.relation_name));
+            }
+            if !self.y_column_name.is_null() {
+                drop(CString::from_raw(self.y_column_name));
+            }
+            if !self.algorithm.is_null() {
+                drop(CString::from_raw(self.algorithm));
+            }
+        }
+    }
+}
+
+#[repr(C)]
+pub struct ValidateTrainInitData {
+    done: bool,
+}
+
+impl Free for ValidateTrainInitData {
+    fn free(&mut self) {}
+}
+
+pub struct ValidateTrainVTab;
+
+impl VTab for ValidateTrainVTab {
+    type InitData = ValidateTrainInitData;
+    type BindData = ValidateTrainBindData;
+
+    unsafe fn bind(
+        bind: &duckdb::vtab::BindInfo,
+        data: *mut Self::BindData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        bind.add_result_column("check", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("status", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        bind.add_result_column("message", LogicalTypeHandle::from(LogicalTypeId::Varchar));
+
+        let project_name = bind.get_parameter(0).to_string();
+        let task = bind
+            .get_named_parameter("task")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let relation_name = bind
+            .get_named_parameter("relation_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let y_column_name = bind
+            .get_named_parameter("y_column_name")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+        let algorithm = bind
+            .get_named_parameter("algorithm")
+            .map_or_else(|| "".to_string(), |v| v.to_string());
+
+        unsafe {
+            (*data).project_name = CString::new(project_name).unwrap().into_raw();
+            (*data).task = CString::new(task).unwrap().into_raw();
+            (*data).relation_name = CString::new(relation_name).unwrap().into_raw();
+            (*data).y_column_name = CString::new(y_column_name).unwrap().into_raw();
+            (*data).algorithm = CString::new(algorithm).unwrap().into_raw();
+        }
+        Ok(())
+    }
+
+    unsafe fn init(
+        _init: &duckdb::vtab::InitInfo,
+        data: *mut Self::InitData,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        unsafe {
+            (*data).done = false;
+        }
+        Ok(())
+    }
+
+    unsafe fn func(
+        func: &duckdb::vtab::FunctionInfo,
+        output: &mut duckdb::core::DataChunkHandle,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let init_data = func.get_init_data::<ValidateTrainInitData>();
+        let bind_data = func.get_bind_data::<ValidateTrainBindData>();
+
+        unsafe {
+            if (*init_data).done {
+                output.set_len(0);
+                return Ok(());
+            }
+            (*init_data).done = true;
+
+            let project_name = CString::from_raw((*bind_data).project_name);
+            let task_str = CString::from_raw((*bind_data).task);
+            let relation_name = CString::from_raw((*bind_data).relation_name);
+            let y_column_name = CString::from_raw((*bind_data).y_column_name);
+            let algorithm_str = CString::from_raw((*bind_data).algorithm);
+
+            // Restore pointers
+            (*bind_data).project_name = project_name.clone().into_raw();
+            (*bind_data).task = task_str.clone().into_raw();
+            (*bind_data).relation_name = relation_name.clone().into_raw();
+            (*bind_data).y_column_name = y_column_name.clone().into_raw();
+            (*bind_data).algorithm = algorithm_str.clone().into_raw();
+
+            let project_name = project_name.to_str().unwrap_or("");
+            let task_str = task_str.to_str().unwrap_or("");
+            let relation_name = relation_name.to_str().unwrap_or("");
+            let y_column_name = y_column_name.to_str().unwrap_or("");
+            let algorithm_str = algorithm_str.to_str().unwrap_or("");
+
+            let mut checks: Vec<(&str, &str, String)> = Vec::new();
+
+            // Check 1: Project name
+            if project_name.is_empty() {
+                checks.push(("project_name", "error", "Project name is required".to_string()));
+            } else {
+                let project_exists = Project::find_by_name(project_name).is_some();
+                if project_exists {
+                    checks.push(("project_name", "ok", format!("Project '{}' exists, will add new model", project_name)));
+                } else {
+                    checks.push(("project_name", "ok", format!("Will create new project '{}'", project_name)));
+                }
+            }
+
+            // Check 2: Task
+            if task_str.is_empty() {
+                let project_exists = Project::find_by_name(project_name).is_some();
+                if project_exists {
+                    checks.push(("task", "ok", "Using existing project's task".to_string()));
+                } else {
+                    checks.push(("task", "error", "Task is required for new projects. Options: classification, regression, clustering, etc.".to_string()));
+                }
+            } else {
+                match Task::from_str(task_str) {
+                    Ok(task) => {
+                        checks.push(("task", "ok", format!("Task '{}' is valid (metric: {})", task_str, task.default_target_metric())));
+                    }
+                    Err(_) => {
+                        let suggestion = QuackMLError::suggest_similar(task_str, Task::all_names());
+                        let msg = match suggestion {
+                            Some(s) => format!("Unknown task '{}'. Did you mean '{}'?", task_str, s),
+                            None => format!("Unknown task '{}'. Valid: {}", task_str, Task::all_names().join(", ")),
+                        };
+                        checks.push(("task", "error", msg));
+                    }
+                }
+            }
+
+            // Check 3: Relation name (table)
+            if relation_name.is_empty() {
+                checks.push(("relation_name", "warning", "No relation_name specified. Will use existing snapshot if available.".to_string()));
+            } else {
+                // Try to check if table exists
+                let table_check = context::run(|conn| {
+                    conn.query_row(
+                        &format!("SELECT COUNT(*) FROM {}", relation_name),
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                });
+                match table_check {
+                    Ok(count) => {
+                        checks.push(("relation_name", "ok", format!("Table '{}' exists with {} rows", relation_name, count)));
+                    }
+                    Err(_) => {
+                        checks.push(("relation_name", "error", format!("Table '{}' not found or inaccessible", relation_name)));
+                    }
+                }
+            }
+
+            // Check 4: Y column name
+            if y_column_name.is_empty() {
+                if !relation_name.is_empty() {
+                    checks.push(("y_column_name", "warning", "No y_column_name specified. Required for supervised tasks.".to_string()));
+                }
+            } else if !relation_name.is_empty() {
+                // Try to check if column exists
+                let col_check = context::run(|conn| {
+                    conn.query_row(
+                        &format!("SELECT \"{}\" FROM {} LIMIT 1", y_column_name, relation_name),
+                        [],
+                        |_| Ok(()),
+                    )
+                });
+                match col_check {
+                    Ok(_) => {
+                        checks.push(("y_column_name", "ok", format!("Column '{}' exists in table", y_column_name)));
+                    }
+                    Err(_) => {
+                        checks.push(("y_column_name", "error", format!("Column '{}' not found in table '{}'", y_column_name, relation_name)));
+                    }
+                }
+            }
+
+            // Check 5: Algorithm
+            if algorithm_str.is_empty() {
+                checks.push(("algorithm", "ok", "Using default algorithm (linear)".to_string()));
+            } else {
+                match Algorithm::from_str(algorithm_str) {
+                    Ok(_) => {
+                        checks.push(("algorithm", "ok", format!("Algorithm '{}' is valid", algorithm_str)));
+                    }
+                    Err(_) => {
+                        let suggestion = QuackMLError::suggest_similar(algorithm_str, Algorithm::all_names());
+                        let msg = match suggestion {
+                            Some(s) => format!("Unknown algorithm '{}'. Did you mean '{}'?", algorithm_str, s),
+                            None => format!("Unknown algorithm '{}'. See: SELECT * FROM list_algorithms()", algorithm_str),
+                        };
+                        checks.push(("algorithm", "error", msg));
+                    }
+                }
+            }
+
+            // Summary check
+            let has_errors = checks.iter().any(|(_, status, _)| *status == "error");
+            if has_errors {
+                checks.push(("summary", "error", "Validation failed. Fix errors above before training.".to_string()));
+            } else {
+                checks.push(("summary", "ok", "Validation passed! Ready to train.".to_string()));
+            }
+
+            let check_col = output.flat_vector(0);
+            let status_col = output.flat_vector(1);
+            let message_col = output.flat_vector(2);
+
+            for (i, (check, status, message)) in checks.iter().enumerate() {
+                check_col.insert(i, CString::new(*check).unwrap());
+                status_col.insert(i, CString::new(*status).unwrap());
+                message_col.insert(i, CString::new(message.as_str()).unwrap());
+            }
+
+            output.set_len(checks.len());
+        }
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<duckdb::core::LogicalTypeHandle>> {
+        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, duckdb::core::LogicalTypeHandle)>> {
+        Some(vec![
+            ("task".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("relation_name".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("y_column_name".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("algorithm".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ])
     }
 }
 
