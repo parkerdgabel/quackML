@@ -66,6 +66,10 @@ pub fn quack_ml_init(conn: Connection) -> Result<(), Box<dyn Error>> {
     // Register validation functions
     conn.register_table_function::<api::ValidateTrainVTab>("validate_train")?;
 
+    // Register verbosity control functions
+    conn.register_scalar_function::<api::SetVerboseScalar>("set_verbose")?;
+    conn.register_scalar_function::<api::GetVerboseScalar>("get_verbose")?;
+
     Ok(())
 }
 

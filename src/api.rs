@@ -723,7 +723,7 @@ fn train_joint(
         }
 
         Some(relation_name) => {
-            println!("[quackML] Snapshotting table \"{}\"...", relation_name);
+            crate::quackml_info!("[quackML] Snapshotting table \"{}\"...", relation_name);
 
             // Validate y_column_name for supervised tasks
             if project.task.is_supervised() && y_column_name.is_none() {
@@ -774,7 +774,7 @@ fn train_joint(
         algorithm
     };
 
-    println!("[quackML] Training {} model with {} algorithm...",
+    crate::quackml_info!("[quackML] Training {} model with {} algorithm...",
              project.task.to_string(), algorithm.to_string());
 
     // # Default repeatable random state when possible
@@ -792,7 +792,7 @@ fn train_joint(
     )
     .unwrap();
 
-    println!("[quackML] Model training complete.");
+    crate::quackml_info!("[quackML] Model training complete.");
 
     let new_metrics: &serde_json::Value = &model.metrics.expect("Failed to get model metrics");
 
@@ -819,7 +819,7 @@ fn train_joint(
 
     let mut deploy = true;
 
-    println!("[quackML] Evaluating model metrics...");
+    crate::quackml_info!("[quackML] Evaluating model metrics...");
     match automatic_deploy {
         // Deploy only if metrics are better than previous model, or if its the first model
         Some(true) | None => {
@@ -877,9 +877,9 @@ fn train_joint(
 
     if deploy {
         project.deploy(model.id, Strategy::new_score);
-        println!("[quackML] Model deployed successfully.");
+        crate::quackml_info!("[quackML] Model deployed successfully.");
     } else {
-        println!("[quackML] Model trained but not deployed (existing model has better metrics).");
+        crate::quackml_info!("[quackML] Model trained but not deployed (existing model has better metrics).");
     }
 
     // Get the primary metric value for the output
@@ -890,7 +890,7 @@ fn train_joint(
         .unwrap_or(0.0);
 
     // Print summary for user feedback
-    println!("[quackML] Result: {} = {:.4}", default_metric, metric_value);
+    crate::quackml_info!("[quackML] Result: {} = {:.4}", default_metric, metric_value);
 
     Ok(TrainResult {
         project_name: project.name,
@@ -1897,6 +1897,80 @@ fn generate_batch(project_name: &str, inputs: Vec<&str>, config: serde_json::Val
     ) {
         Ok(output) => output,
         Err(e) => panic!("{e}"),
+    }
+}
+
+// =============================================================================
+// set_verbose() / get_verbose() - Control logging verbosity
+// =============================================================================
+
+pub struct SetVerboseScalar {}
+
+impl VScalar for SetVerboseScalar {
+    type State = ();
+
+    fn invoke(
+        _state: &Self::State,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let count = input.len();
+        let level_vec = input.flat_vector(0);
+
+        for i in 0..count {
+            let level = level_vec.get::<i32>(i) as u8;
+            context::set_verbosity(level);
+            let level_name = match level {
+                0 => "quiet",
+                1 => "normal",
+                2 => "verbose",
+                3 => "debug",
+                _ => "normal",
+            };
+            let msg = format!("Verbosity set to {} ({})", level, level_name);
+            output.insert(i, CString::new(msg).unwrap());
+        }
+        Ok(())
+    }
+
+    fn state() -> Self::State {}
+
+    fn parameters() -> Vec<LogicalTypeHandle> {
+        vec![LogicalTypeHandle::from(LogicalTypeId::Integer)]
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Varchar)
+    }
+}
+
+pub struct GetVerboseScalar {}
+
+impl VScalar for GetVerboseScalar {
+    type State = ();
+
+    fn invoke(
+        _state: &Self::State,
+        input: &mut duckdb::core::DataChunkHandle,
+        output: &mut duckdb::core::FlatVector,
+    ) -> duckdb::Result<(), Box<dyn std::error::Error>> {
+        let count = input.len();
+        let level = context::get_verbosity() as i32;
+
+        for i in 0..count {
+            output.insert(i, level);
+        }
+        Ok(())
+    }
+
+    fn state() -> Self::State {}
+
+    fn parameters() -> Vec<LogicalTypeHandle> {
+        vec![]
+    }
+
+    fn return_type() -> LogicalTypeHandle {
+        LogicalTypeHandle::from(LogicalTypeId::Integer)
     }
 }
 
@@ -2935,6 +3009,18 @@ const FUNCTION_HELP: &[FunctionHelp] = &[
         description: "Dry-run validation before training (checks parameters without training)",
         parameters: "project_name, [task], [relation_name], [y_column_name], [algorithm]",
         example: "SELECT * FROM validate_train('my_model', task => 'classification', relation_name => 'data', y_column_name => 'target')"
+    },
+    FunctionHelp {
+        name: "set_verbose",
+        description: "Set logging verbosity level (0=quiet, 1=normal, 2=verbose, 3=debug)",
+        parameters: "level (integer 0-3)",
+        example: "SELECT set_verbose(2)  -- Enable verbose output"
+    },
+    FunctionHelp {
+        name: "get_verbose",
+        description: "Get current verbosity level",
+        parameters: "(none)",
+        example: "SELECT get_verbose()"
     },
 ];
 

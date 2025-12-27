@@ -1,4 +1,54 @@
 use anyhow::{Context, Result};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+/// Verbosity level for quackML logging
+/// 0 = quiet (errors only)
+/// 1 = normal (default, progress messages)
+/// 2 = verbose (detailed info)
+/// 3 = debug (all internal details)
+pub static VERBOSITY_LEVEL: AtomicU8 = AtomicU8::new(1);
+
+/// Set the verbosity level
+pub fn set_verbosity(level: u8) {
+    VERBOSITY_LEVEL.store(level.min(3), Ordering::SeqCst);
+}
+
+/// Get the current verbosity level
+pub fn get_verbosity() -> u8 {
+    VERBOSITY_LEVEL.load(Ordering::SeqCst)
+}
+
+/// Log a message if the verbosity level is high enough
+#[macro_export]
+macro_rules! quackml_log {
+    ($level:expr, $($arg:tt)*) => {
+        if $crate::context::get_verbosity() >= $level {
+            println!($($arg)*);
+        }
+    };
+}
+
+/// Convenience macros for different log levels
+#[macro_export]
+macro_rules! quackml_info {
+    ($($arg:tt)*) => {
+        $crate::quackml_log!(1, $($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! quackml_verbose {
+    ($($arg:tt)*) => {
+        $crate::quackml_log!(2, $($arg)*);
+    };
+}
+
+#[macro_export]
+macro_rules! quackml_debug {
+    ($($arg:tt)*) => {
+        $crate::quackml_log!(3, $($arg)*);
+    };
+}
 
 pub struct DatabaseContext {
     connection: duckdb::Connection,
