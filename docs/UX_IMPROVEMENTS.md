@@ -856,23 +856,26 @@ SELECT * FROM quackml.registry;
 
 ## Implementation Priority Matrix
 
-| Improvement | Impact | Effort | Priority |
-|-------------|--------|--------|----------|
-| Replace panics with proper errors | 🔴 High | 🟢 Low | **P0** |
-| Fix "NULL" string defaults | 🔴 High | 🟢 Low | **P0** |
-| Early validation before training | 🔴 High | 🟡 Medium | **P0** |
-| Progress feedback during training | 🔴 High | 🟡 Medium | **P0** |
-| `help()` function | 🟡 Medium | 🟢 Low | **P1** |
-| `list_algorithms()` function | 🟡 Medium | 🟢 Low | **P1** |
-| "Did you mean?" suggestions | 🟡 Medium | 🟢 Low | **P1** |
-| Rich output from train() | 🟡 Medium | 🟡 Medium | **P1** |
-| Full predict_proba output | 🟡 Medium | 🟢 Low | **P1** |
-| Auto-detect task type | 🟡 Medium | 🟡 Medium | **P2** |
-| Data profiling function | 🟡 Medium | 🟡 Medium | **P2** |
-| Debug/verbose mode | 🟢 Low | 🟢 Low | **P2** |
-| Dry run mode | 🟢 Low | 🟡 Medium | **P2** |
-| Model export/import | 🟢 Low | 🟡 Medium | **P3** |
-| A/B testing | 🟢 Low | 🔴 High | **P3** |
+| Improvement | Impact | Effort | Priority | Status |
+|-------------|--------|--------|----------|--------|
+| Replace panics with proper errors | 🔴 High | 🟢 Low | **P0** | ✅ Done |
+| Fix "NULL" string defaults | 🔴 High | 🟢 Low | **P0** | ✅ Done |
+| Early validation before training | 🔴 High | 🟡 Medium | **P0** | ✅ Done |
+| Progress feedback during training | 🔴 High | 🟡 Medium | **P0** | ✅ Done |
+| `help()` function | 🟡 Medium | 🟢 Low | **P1** | ✅ Done (`quackml_help()`) |
+| `list_algorithms()` function | 🟡 Medium | 🟢 Low | **P1** | ✅ Done |
+| `list_tasks()` function | 🟡 Medium | 🟢 Low | **P1** | ✅ Done |
+| "Did you mean?" suggestions | 🟡 Medium | 🟢 Low | **P1** | ✅ Done |
+| Rich output from train() | 🟡 Medium | 🟡 Medium | **P1** | ✅ Done |
+| Full predict_proba output | 🟡 Medium | 🟢 Low | **P1** | ✅ Done |
+| Debug/verbose mode | 🟢 Low | 🟢 Low | **P2** | ✅ Done (`set_verbose()`) |
+| Dry run mode | 🟢 Low | 🟡 Medium | **P2** | ✅ Done (`validate_train()`) |
+| Model introspection | 🟡 Medium | 🟡 Medium | **P2** | ✅ Done (`deployed_models()`, `trained_models()`) |
+| Model comparison | 🟡 Medium | 🟡 Medium | **P2** | ✅ Done (`compare_models()`) |
+| Auto-detect task type | 🟡 Medium | 🟡 Medium | **P2** | Pending |
+| Data profiling function | 🟡 Medium | 🟡 Medium | **P2** | Pending |
+| Model export/import | 🟢 Low | 🟡 Medium | **P3** | Pending |
+| A/B testing | 🟢 Low | 🔴 High | **P3** | Pending |
 
 ---
 
