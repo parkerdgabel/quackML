@@ -368,3 +368,370 @@ impl Bindings for Estimator {
         Ok(Box::new(Estimator { estimator }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    /// Helper to create a simple regression dataset
+    fn create_regression_dataset() -> Dataset {
+        let x_train = vec![
+            1.0, 2.0,
+            2.0, 3.0,
+            3.0, 4.0,
+            4.0, 5.0,
+            5.0, 6.0,
+            6.0, 7.0,
+            7.0, 8.0,
+            8.0, 9.0,
+        ];
+        let y_train = vec![3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 17.0];
+
+        let x_test = vec![
+            9.0, 10.0,
+            10.0, 11.0,
+        ];
+        let y_test = vec![19.0, 21.0];
+
+        Dataset {
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            num_features: 2,
+            num_labels: 1,
+            num_rows: 10,
+            num_train_rows: 8,
+            num_test_rows: 2,
+            num_distinct_labels: 0,
+        }
+    }
+
+    /// Helper to create a binary classification dataset
+    fn create_binary_classification_dataset() -> Dataset {
+        let x_train = vec![
+            1.0, 1.0,
+            1.5, 1.2,
+            0.8, 1.3,
+            1.2, 0.9,
+            5.0, 5.0,
+            5.5, 5.2,
+            4.8, 5.3,
+            5.2, 4.9,
+        ];
+        let y_train = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+
+        let x_test = vec![
+            1.1, 1.1,
+            5.1, 5.1,
+        ];
+        let y_test = vec![0.0, 1.0];
+
+        Dataset {
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            num_features: 2,
+            num_labels: 1,
+            num_rows: 10,
+            num_train_rows: 8,
+            num_test_rows: 2,
+            num_distinct_labels: 2,
+        }
+    }
+
+    /// Helper to create a multiclass classification dataset
+    fn create_multiclass_classification_dataset() -> Dataset {
+        let x_train = vec![
+            1.0, 1.0,
+            1.2, 0.9,
+            0.9, 1.1,
+            5.0, 1.0,
+            5.2, 0.9,
+            4.9, 1.1,
+            3.0, 5.0,
+            3.2, 4.9,
+            2.9, 5.1,
+        ];
+        let y_train = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0];
+
+        let x_test = vec![
+            1.1, 1.0,
+            5.1, 1.0,
+            3.0, 5.0,
+        ];
+        let y_test = vec![0.0, 1.0, 2.0];
+
+        Dataset {
+            x_train,
+            y_train,
+            x_test,
+            y_test,
+            num_features: 2,
+            num_labels: 1,
+            num_rows: 12,
+            num_train_rows: 9,
+            num_test_rows: 3,
+            num_distinct_labels: 3,
+        }
+    }
+
+    // ===================
+    // Parameter Parsing Tests
+    // ===================
+
+    #[test]
+    fn test_get_tree_params_default() {
+        let hyperparams: Hyperparams = IndexMap::new();
+        let params = get_tree_params(&hyperparams);
+        // Should build without panicking
+        assert!(format!("{:?}", params).contains("TreeBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_tree_params_with_eta() {
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("eta".to_string(), serde_json::json!(0.1));
+        let params = get_tree_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("TreeBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_tree_params_with_learning_rate_alias() {
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("learning_rate".to_string(), serde_json::json!(0.05));
+        let params = get_tree_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("TreeBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_tree_params_with_max_depth() {
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("max_depth".to_string(), serde_json::json!(6));
+        let params = get_tree_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("TreeBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_linear_params_default() {
+        let hyperparams: Hyperparams = IndexMap::new();
+        let params = get_linear_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("LinearBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_linear_params_with_alpha() {
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("alpha".to_string(), serde_json::json!(0.01));
+        let params = get_linear_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("LinearBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_dart_params_default() {
+        let hyperparams: Hyperparams = IndexMap::new();
+        let params = get_dart_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("DartBoosterParameters"));
+    }
+
+    #[test]
+    fn test_get_dart_params_with_rate_drop() {
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("rate_drop".to_string(), serde_json::json!(0.1));
+        let params = get_dart_params(&hyperparams);
+        assert!(format!("{:?}", params).contains("DartBoosterParameters"));
+    }
+
+    // ===================
+    // Eval Metric Tests
+    // ===================
+
+    #[test]
+    fn test_eval_metric_from_string_rmse() {
+        let metric = eval_metric_from_string("rmse");
+        assert!(format!("{:?}", metric).contains("RMSE"));
+    }
+
+    #[test]
+    fn test_eval_metric_from_string_logloss() {
+        let metric = eval_metric_from_string("logloss");
+        assert!(format!("{:?}", metric).contains("LogLoss"));
+    }
+
+    #[test]
+    fn test_eval_metric_from_string_auc() {
+        let metric = eval_metric_from_string("auc");
+        assert!(format!("{:?}", metric).contains("AUC"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown eval_metric")]
+    fn test_eval_metric_from_string_invalid() {
+        eval_metric_from_string("invalid_metric");
+    }
+
+    // ===================
+    // Objective Tests
+    // ===================
+
+    #[test]
+    fn test_objective_from_string_reg_linear() {
+        let dataset = create_regression_dataset();
+        let obj = objective_from_string("reg:linear", &dataset);
+        assert!(format!("{:?}", obj).contains("RegLinear"));
+    }
+
+    #[test]
+    fn test_objective_from_string_binary_logistic() {
+        let dataset = create_binary_classification_dataset();
+        let obj = objective_from_string("binary:logistic", &dataset);
+        assert!(format!("{:?}", obj).contains("BinaryLogistic"));
+    }
+
+    #[test]
+    fn test_objective_from_string_multi_softmax() {
+        let dataset = create_multiclass_classification_dataset();
+        let obj = objective_from_string("multi:softmax", &dataset);
+        assert!(format!("{:?}", obj).contains("MultiSoftmax"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Unknown objective")]
+    fn test_objective_from_string_invalid() {
+        let dataset = create_regression_dataset();
+        objective_from_string("invalid:objective", &dataset);
+    }
+
+    // ===================
+    // Fit and Predict Tests
+    // ===================
+
+    #[test]
+    fn test_fit_regression() {
+        let dataset = create_regression_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(10));
+
+        let model = fit_regression(&dataset, &hyperparams);
+        assert!(model.is_ok(), "Failed to fit regression model: {:?}", model.err());
+
+        let model = model.unwrap();
+        let predictions = model.predict(&dataset.x_test, dataset.num_features, 0);
+        assert!(predictions.is_ok());
+        assert_eq!(predictions.unwrap().len(), dataset.num_test_rows);
+    }
+
+    #[test]
+    fn test_fit_classification_binary() {
+        let dataset = create_binary_classification_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(10));
+
+        let model = fit_classification(&dataset, &hyperparams);
+        assert!(model.is_ok(), "Failed to fit binary classification model: {:?}", model.err());
+
+        let model = model.unwrap();
+        let predictions = model.predict(&dataset.x_test, dataset.num_features, dataset.num_distinct_labels);
+        assert!(predictions.is_ok());
+
+        let preds = predictions.unwrap();
+        assert_eq!(preds.len(), dataset.num_test_rows);
+
+        // Predictions should be valid class indices
+        for pred in preds {
+            assert!(pred >= 0.0 && pred < dataset.num_distinct_labels as f32);
+        }
+    }
+
+    #[test]
+    fn test_fit_classification_multiclass() {
+        let dataset = create_multiclass_classification_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(10));
+
+        let model = fit_classification(&dataset, &hyperparams);
+        assert!(model.is_ok(), "Failed to fit multiclass classification model: {:?}", model.err());
+
+        let model = model.unwrap();
+        let predictions = model.predict(&dataset.x_test, dataset.num_features, dataset.num_distinct_labels);
+        assert!(predictions.is_ok());
+
+        let preds = predictions.unwrap();
+        assert_eq!(preds.len(), dataset.num_test_rows);
+
+        // Predictions should be valid class indices
+        for pred in preds {
+            assert!(pred >= 0.0 && pred < dataset.num_distinct_labels as f32);
+        }
+    }
+
+    #[test]
+    fn test_predict_proba() {
+        let dataset = create_binary_classification_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(10));
+
+        let model = fit_classification(&dataset, &hyperparams).unwrap();
+        let probas = model.predict_proba(&dataset.x_test, dataset.num_features);
+        assert!(probas.is_ok());
+
+        let probas = probas.unwrap();
+        // For binary classification with softprob, we get 2 probabilities per sample
+        assert_eq!(probas.len(), dataset.num_test_rows * dataset.num_distinct_labels);
+    }
+
+    #[test]
+    fn test_serialization_roundtrip() {
+        let dataset = create_regression_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(10));
+
+        let model = fit_regression(&dataset, &hyperparams).unwrap();
+
+        // Get predictions before serialization
+        let predictions_before = model.predict(&dataset.x_test, dataset.num_features, 0).unwrap();
+
+        // Serialize and deserialize
+        let bytes = model.to_bytes().expect("Failed to serialize");
+        let restored = Estimator::from_bytes(&bytes).expect("Failed to deserialize");
+
+        // Get predictions after deserialization
+        let predictions_after = restored.predict(&dataset.x_test, dataset.num_features, 0).unwrap();
+
+        // Predictions should be identical
+        assert_eq!(predictions_before.len(), predictions_after.len());
+        for (before, after) in predictions_before.iter().zip(predictions_after.iter()) {
+            assert!(
+                (before - after).abs() < 1e-6,
+                "Serialization changed predictions: {} vs {}",
+                before, after
+            );
+        }
+    }
+
+    #[test]
+    fn test_estimator_debug() {
+        let dataset = create_regression_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(5));
+
+        let model = fit_regression(&dataset, &hyperparams).unwrap();
+        let debug_str = format!("{:?}", model);
+        assert!(debug_str.contains("Estimator"));
+    }
+
+    #[test]
+    fn test_fit_with_custom_hyperparams() {
+        let dataset = create_regression_dataset();
+        let mut hyperparams: Hyperparams = IndexMap::new();
+        hyperparams.insert("n_estimators".to_string(), serde_json::json!(5));
+        hyperparams.insert("max_depth".to_string(), serde_json::json!(3));
+        hyperparams.insert("eta".to_string(), serde_json::json!(0.3));
+        hyperparams.insert("subsample".to_string(), serde_json::json!(0.8));
+
+        let model = fit_regression(&dataset, &hyperparams);
+        assert!(model.is_ok(), "Failed to fit with custom hyperparams: {:?}", model.err());
+    }
+}

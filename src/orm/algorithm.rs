@@ -156,3 +156,132 @@ impl std::string::ToString for Algorithm {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    /// All algorithm string names for testing
+    const ALL_ALGORITHMS: &[(&str, Algorithm)] = &[
+        ("linear", Algorithm::linear),
+        ("xgboost", Algorithm::xgboost),
+        ("xgboost_random_forest", Algorithm::xgboost_random_forest),
+        ("svm", Algorithm::svm),
+        ("lasso", Algorithm::lasso),
+        ("elastic_net", Algorithm::elastic_net),
+        ("ridge", Algorithm::ridge),
+        ("kmeans", Algorithm::kmeans),
+        ("dbscan", Algorithm::dbscan),
+        ("knn", Algorithm::knn),
+        ("random_forest", Algorithm::random_forest),
+        ("least_angle", Algorithm::least_angle),
+        ("lasso_least_angle", Algorithm::lasso_least_angle),
+        ("orthogonal_matching_pursuit", Algorithm::orthogonal_matching_pursuit),
+        ("bayesian_ridge", Algorithm::bayesian_ridge),
+        ("automatic_relevance_determination", Algorithm::automatic_relevance_determination),
+        ("stochastic_gradient_descent", Algorithm::stochastic_gradient_descent),
+        ("perceptron", Algorithm::perceptron),
+        ("passive_aggressive", Algorithm::passive_aggressive),
+        ("ransac", Algorithm::ransac),
+        ("theil_sen", Algorithm::theil_sen),
+        ("huber", Algorithm::huber),
+        ("quantile", Algorithm::quantile),
+        ("kernel_ridge", Algorithm::kernel_ridge),
+        ("gaussian_process", Algorithm::gaussian_process),
+        ("nu_svm", Algorithm::nu_svm),
+        ("ada_boost", Algorithm::ada_boost),
+        ("bagging", Algorithm::bagging),
+        ("extra_trees", Algorithm::extra_trees),
+        ("gradient_boosting_trees", Algorithm::gradient_boosting_trees),
+        ("hist_gradient_boosting", Algorithm::hist_gradient_boosting),
+        ("linear_svm", Algorithm::linear_svm),
+        ("lightgbm", Algorithm::lightgbm),
+        ("transformers", Algorithm::transformers),
+        ("affinity_propagation", Algorithm::affinity_propagation),
+        ("birch", Algorithm::birch),
+        ("feature_agglomeration", Algorithm::feature_agglomeration),
+        ("mini_batch_kmeans", Algorithm::mini_batch_kmeans),
+        ("mean_shift", Algorithm::mean_shift),
+        ("optics", Algorithm::optics),
+        ("spectral", Algorithm::spectral),
+        ("spectral_bi", Algorithm::spectral_bi),
+        ("spectral_co", Algorithm::spectral_co),
+        ("catboost", Algorithm::catboost),
+        ("pca", Algorithm::pca),
+    ];
+
+    #[test]
+    fn test_from_str_all_algorithms() {
+        for (name, expected) in ALL_ALGORITHMS {
+            let result = Algorithm::from_str(name);
+            assert!(result.is_ok(), "Failed to parse algorithm: {}", name);
+            assert_eq!(result.unwrap(), *expected, "Mismatch for algorithm: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_to_string_all_algorithms() {
+        for (expected_name, algorithm) in ALL_ALGORITHMS {
+            let result = algorithm.to_string();
+            assert_eq!(result, *expected_name, "Mismatch for algorithm: {:?}", algorithm);
+        }
+    }
+
+    #[test]
+    fn test_from_str_roundtrip() {
+        for (name, _) in ALL_ALGORITHMS {
+            let parsed = Algorithm::from_str(name).unwrap();
+            let stringified = parsed.to_string();
+            assert_eq!(stringified, *name, "Roundtrip failed for: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_from_str_invalid() {
+        let invalid_names = &[
+            "invalid",
+            "XGBOOST",      // case sensitive
+            "Linear",       // case sensitive
+            "random-forest", // wrong separator
+            "",
+            "   ",
+            "xgboost ",     // trailing space
+            " xgboost",     // leading space
+        ];
+
+        for name in invalid_names {
+            let result = Algorithm::from_str(name);
+            assert!(result.is_err(), "Expected error for invalid algorithm: '{}'", name);
+        }
+    }
+
+    #[test]
+    fn test_algorithm_equality() {
+        assert_eq!(Algorithm::xgboost, Algorithm::xgboost);
+        assert_ne!(Algorithm::xgboost, Algorithm::lightgbm);
+        assert_ne!(Algorithm::linear, Algorithm::linear_svm);
+    }
+
+    #[test]
+    fn test_algorithm_copy_clone() {
+        let algo = Algorithm::random_forest;
+        let copied = algo;
+        let cloned = algo.clone();
+        assert_eq!(algo, copied);
+        assert_eq!(algo, cloned);
+    }
+
+    #[test]
+    fn test_algorithm_debug() {
+        let algo = Algorithm::xgboost;
+        let debug_str = format!("{:?}", algo);
+        assert_eq!(debug_str, "xgboost");
+    }
+
+    #[test]
+    fn test_all_algorithms_count() {
+        // Ensure we're testing all 46 algorithms defined in the enum
+        assert_eq!(ALL_ALGORITHMS.len(), 46, "Algorithm count mismatch - update tests if enum changed");
+    }
+}

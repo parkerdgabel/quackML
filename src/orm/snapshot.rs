@@ -1513,3 +1513,624 @@ fn flatten_value(value: duckdb::types::Value) -> Vec<duckdb::types::Value> {
         value => vec![value],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Category Tests ====================
+
+    #[test]
+    fn test_category_creation() {
+        let category = Category {
+            value: 1.5,
+            members: 10,
+        };
+        assert_eq!(category.value, 1.5);
+        assert_eq!(category.members, 10);
+    }
+
+    #[test]
+    fn test_category_equality() {
+        let cat1 = Category {
+            value: 2.0,
+            members: 5,
+        };
+        let cat2 = Category {
+            value: 2.0,
+            members: 5,
+        };
+        let cat3 = Category {
+            value: 3.0,
+            members: 5,
+        };
+
+        assert_eq!(cat1, cat2);
+        assert_ne!(cat1, cat3);
+    }
+
+    #[test]
+    fn test_category_clone() {
+        let original = Category {
+            value: 0.5,
+            members: 100,
+        };
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_category_debug() {
+        let category = Category {
+            value: 1.0,
+            members: 3,
+        };
+        let debug = format!("{:?}", category);
+        assert!(debug.contains("Category"));
+        assert!(debug.contains("value"));
+        assert!(debug.contains("members"));
+    }
+
+    // ==================== Statistics Tests ====================
+
+    #[test]
+    fn test_statistics_default() {
+        let stats = Statistics::default();
+
+        assert!(stats.min.is_nan());
+        assert!(stats.max.is_nan());
+        assert!(stats.max_abs.is_nan());
+        assert!(stats.mean.is_nan());
+        assert!(stats.median.is_nan());
+        assert!(stats.mode.is_nan());
+        assert!(stats.variance.is_nan());
+        assert!(stats.std_dev.is_nan());
+        assert_eq!(stats.missing, 0);
+        assert_eq!(stats.distinct, 0);
+        assert_eq!(stats.histogram.len(), 20);
+        assert_eq!(stats.ventiles.len(), 19);
+        assert!(stats.categories.is_none());
+    }
+
+    #[test]
+    fn test_statistics_histogram_initialization() {
+        let stats = Statistics::default();
+        for count in &stats.histogram {
+            assert_eq!(*count, 0);
+        }
+    }
+
+    #[test]
+    fn test_statistics_ventiles_initialization() {
+        let stats = Statistics::default();
+        for ventile in &stats.ventiles {
+            assert!(ventile.is_nan());
+        }
+    }
+
+    #[test]
+    fn test_statistics_with_categories() {
+        let mut stats = Statistics::default();
+        let mut categories = HashMap::new();
+        categories.insert(
+            "cat_a".to_string(),
+            Category {
+                value: 0.0,
+                members: 5,
+            },
+        );
+        categories.insert(
+            "cat_b".to_string(),
+            Category {
+                value: 1.0,
+                members: 3,
+            },
+        );
+        stats.categories = Some(categories);
+
+        assert!(stats.categories.is_some());
+        assert_eq!(stats.categories.as_ref().unwrap().len(), 2);
+    }
+
+    // ==================== Encode Tests ====================
+
+    #[test]
+    fn test_encode_default() {
+        let encode = Encode::default();
+        assert_eq!(encode, Encode::native);
+    }
+
+    #[test]
+    fn test_encode_variants() {
+        let native = Encode::native;
+        let target = Encode::target;
+        let one_hot = Encode::one_hot;
+        let ordinal = Encode::ordinal(vec!["low".to_string(), "medium".to_string(), "high".to_string()]);
+
+        assert_eq!(native, Encode::native);
+        assert_eq!(target, Encode::target);
+        assert_eq!(one_hot, Encode::one_hot);
+
+        if let Encode::ordinal(values) = ordinal {
+            assert_eq!(values.len(), 3);
+            assert_eq!(values[0], "low");
+            assert_eq!(values[1], "medium");
+            assert_eq!(values[2], "high");
+        } else {
+            panic!("Expected Encode::ordinal");
+        }
+    }
+
+    #[test]
+    fn test_encode_equality() {
+        assert_eq!(Encode::native, Encode::native);
+        assert_ne!(Encode::native, Encode::target);
+        assert_ne!(Encode::target, Encode::one_hot);
+    }
+
+    #[test]
+    fn test_encode_clone() {
+        let original = Encode::ordinal(vec!["a".to_string(), "b".to_string()]);
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    // ==================== Impute Tests ====================
+
+    #[test]
+    fn test_impute_default() {
+        let impute = Impute::default();
+        assert_eq!(impute, Impute::panic);
+    }
+
+    #[test]
+    fn test_impute_variants() {
+        let variants = vec![
+            Impute::panic,
+            Impute::mean,
+            Impute::median,
+            Impute::mode,
+            Impute::min,
+            Impute::max,
+            Impute::zero,
+        ];
+
+        for variant in &variants {
+            let cloned = variant.clone();
+            assert_eq!(variant, &cloned);
+        }
+    }
+
+    #[test]
+    fn test_impute_equality() {
+        assert_eq!(Impute::mean, Impute::mean);
+        assert_ne!(Impute::mean, Impute::median);
+        assert_ne!(Impute::min, Impute::max);
+    }
+
+    // ==================== Scale Tests ====================
+
+    #[test]
+    fn test_scale_default() {
+        let scale = Scale::default();
+        assert_eq!(scale, Scale::preserve);
+    }
+
+    #[test]
+    fn test_scale_variants() {
+        let variants = vec![
+            Scale::preserve,
+            Scale::standard,
+            Scale::min_max,
+            Scale::max_abs,
+            Scale::robust,
+        ];
+
+        for variant in &variants {
+            let cloned = variant.clone();
+            assert_eq!(variant, &cloned);
+        }
+    }
+
+    #[test]
+    fn test_scale_equality() {
+        assert_eq!(Scale::standard, Scale::standard);
+        assert_ne!(Scale::standard, Scale::min_max);
+        assert_ne!(Scale::preserve, Scale::robust);
+    }
+
+    // ==================== Preprocessor Tests ====================
+
+    #[test]
+    fn test_preprocessor_default() {
+        let preprocessor = Preprocessor::default();
+
+        assert_eq!(preprocessor.encode, Encode::native);
+        assert_eq!(preprocessor.impute, Impute::panic);
+        assert_eq!(preprocessor.scale, Scale::preserve);
+    }
+
+    #[test]
+    fn test_preprocessor_clone() {
+        let preprocessor = Preprocessor {
+            encode: Encode::target,
+            impute: Impute::mean,
+            scale: Scale::standard,
+        };
+        let cloned = preprocessor.clone();
+
+        assert_eq!(preprocessor, cloned);
+    }
+
+    #[test]
+    fn test_preprocessor_equality() {
+        let p1 = Preprocessor::default();
+        let p2 = Preprocessor::default();
+        let p3 = Preprocessor {
+            encode: Encode::one_hot,
+            impute: Impute::median,
+            scale: Scale::min_max,
+        };
+
+        assert_eq!(p1, p2);
+        assert_ne!(p1, p3);
+    }
+
+    // ==================== Column Tests ====================
+
+    fn create_test_column() -> Column {
+        Column {
+            name: "test_column".to_string(),
+            duckdb_type: "DOUBLE".to_string(),
+            nullable: true,
+            label: false,
+            position: 1,
+            size: 1,
+            array: false,
+            preprocessor: Preprocessor::default(),
+            statistics: Statistics::default(),
+        }
+    }
+
+    #[test]
+    fn test_column_creation() {
+        let column = create_test_column();
+
+        assert_eq!(column.name, "test_column");
+        assert_eq!(column.duckdb_type, "DOUBLE");
+        assert!(column.nullable);
+        assert!(!column.label);
+        assert_eq!(column.position, 1);
+        assert_eq!(column.size, 1);
+        assert!(!column.array);
+    }
+
+    #[test]
+    fn test_column_quoted_name() {
+        let column = create_test_column();
+        assert_eq!(column.quoted_name(), r#""test_column""#);
+
+        let column_with_special = Column {
+            name: "my column".to_string(),
+            ..create_test_column()
+        };
+        assert_eq!(column_with_special.quoted_name(), r#""my column""#);
+    }
+
+    #[test]
+    fn test_column_categorical_type() {
+        assert!(Column::categorical_type("TEXT"));
+        assert!(Column::categorical_type("VARCHAR"));
+        assert!(Column::categorical_type("BPCHAR"));
+        assert!(Column::categorical_type("TEXT[]"));
+        assert!(Column::categorical_type("VARCHAR[]"));
+
+        assert!(!Column::categorical_type("INTEGER"));
+        assert!(!Column::categorical_type("DOUBLE"));
+        assert!(!Column::categorical_type("BOOLEAN"));
+    }
+
+    #[test]
+    fn test_column_nominal_type() {
+        assert!(Column::nominal_type("TEXT"));
+        assert!(Column::nominal_type("VARCHAR"));
+        assert!(Column::nominal_type("BPCHAR"));
+
+        assert!(!Column::nominal_type("INTEGER"));
+        assert!(!Column::nominal_type("DOUBLE"));
+    }
+
+    #[test]
+    fn test_column_ordinal_type() {
+        // Currently always returns false
+        assert!(!Column::ordinal_type("TEXT"));
+        assert!(!Column::ordinal_type("INTEGER"));
+    }
+
+    #[test]
+    fn test_column_encoded_width() {
+        let mut column = create_test_column();
+
+        // Default native encoding = width 1
+        assert_eq!(column.encoded_width(), 1);
+
+        // One-hot encoding with 5 categories = width 4 (n-1)
+        column.preprocessor.encode = Encode::one_hot;
+        let mut categories = HashMap::new();
+        for i in 0..5 {
+            categories.insert(
+                format!("cat_{}", i),
+                Category {
+                    value: i as f32,
+                    members: 10,
+                },
+            );
+        }
+        column.statistics.categories = Some(categories);
+        assert_eq!(column.encoded_width(), 4);
+    }
+
+    #[test]
+    fn test_column_array_width() {
+        let mut column = create_test_column();
+        column.size = 10;
+        assert_eq!(column.array_width(), 10);
+
+        column.size = 1;
+        assert_eq!(column.array_width(), 1);
+    }
+
+    #[test]
+    fn test_column_scale_preserve() {
+        let column = create_test_column();
+        assert_eq!(column.scale(5.0), 5.0);
+        assert_eq!(column.scale(0.0), 0.0);
+        assert_eq!(column.scale(-3.5), -3.5);
+    }
+
+    #[test]
+    fn test_column_scale_standard() {
+        let mut column = create_test_column();
+        column.preprocessor.scale = Scale::standard;
+        column.statistics.mean = 10.0;
+        column.statistics.std_dev = 2.0;
+
+        // (12 - 10) / 2 = 1.0
+        assert_eq!(column.scale(12.0), 1.0);
+        // (10 - 10) / 2 = 0.0
+        assert_eq!(column.scale(10.0), 0.0);
+        // (8 - 10) / 2 = -1.0
+        assert_eq!(column.scale(8.0), -1.0);
+    }
+
+    #[test]
+    fn test_column_scale_min_max() {
+        let mut column = create_test_column();
+        column.preprocessor.scale = Scale::min_max;
+        column.statistics.min = 0.0;
+        column.statistics.max = 100.0;
+
+        // (50 - 0) / (100 - 0) = 0.5
+        assert_eq!(column.scale(50.0), 0.5);
+        // (0 - 0) / (100 - 0) = 0.0
+        assert_eq!(column.scale(0.0), 0.0);
+        // (100 - 0) / (100 - 0) = 1.0
+        assert_eq!(column.scale(100.0), 1.0);
+    }
+
+    #[test]
+    fn test_column_scale_max_abs() {
+        let mut column = create_test_column();
+        column.preprocessor.scale = Scale::max_abs;
+        column.statistics.max_abs = 50.0;
+
+        assert_eq!(column.scale(25.0), 0.5);
+        assert_eq!(column.scale(50.0), 1.0);
+        assert_eq!(column.scale(-25.0), -0.5);
+    }
+
+    #[test]
+    fn test_column_impute_with_valid_value() {
+        let column = create_test_column();
+        // Non-NaN values should pass through unchanged
+        assert_eq!(column.impute(5.0), 5.0);
+        assert_eq!(column.impute(0.0), 0.0);
+        assert_eq!(column.impute(-10.0), -10.0);
+    }
+
+    #[test]
+    fn test_column_impute_mean() {
+        let mut column = create_test_column();
+        column.preprocessor.impute = Impute::mean;
+        column.statistics.mean = 42.0;
+
+        assert_eq!(column.impute(f32::NAN), 42.0);
+    }
+
+    #[test]
+    fn test_column_impute_median() {
+        let mut column = create_test_column();
+        column.preprocessor.impute = Impute::median;
+        column.statistics.median = 15.0;
+
+        assert_eq!(column.impute(f32::NAN), 15.0);
+    }
+
+    #[test]
+    fn test_column_impute_mode() {
+        let mut column = create_test_column();
+        column.preprocessor.impute = Impute::mode;
+        column.statistics.mode = 7.0;
+
+        assert_eq!(column.impute(f32::NAN), 7.0);
+    }
+
+    #[test]
+    fn test_column_impute_min() {
+        let mut column = create_test_column();
+        column.preprocessor.impute = Impute::min;
+        column.statistics.min = -5.0;
+
+        assert_eq!(column.impute(f32::NAN), -5.0);
+    }
+
+    #[test]
+    fn test_column_impute_max() {
+        let mut column = create_test_column();
+        column.preprocessor.impute = Impute::max;
+        column.statistics.max = 100.0;
+
+        assert_eq!(column.impute(f32::NAN), 100.0);
+    }
+
+    #[test]
+    fn test_column_impute_zero() {
+        let mut column = create_test_column();
+        column.preprocessor.impute = Impute::zero;
+
+        assert_eq!(column.impute(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn test_column_get_category_value() {
+        let mut column = create_test_column();
+        let mut categories = HashMap::new();
+        categories.insert(
+            "cat_a".to_string(),
+            Category {
+                value: 1.0,
+                members: 5,
+            },
+        );
+        categories.insert(
+            "cat_b".to_string(),
+            Category {
+                value: 2.0,
+                members: 3,
+            },
+        );
+        column.statistics.categories = Some(categories);
+
+        assert_eq!(column.get_category_value("cat_a"), 1.0);
+        assert_eq!(column.get_category_value("cat_b"), 2.0);
+        // Non-existent category returns NaN
+        assert!(column.get_category_value("cat_c").is_nan());
+    }
+
+    #[test]
+    fn test_column_ordering() {
+        let col1 = Column {
+            position: 1,
+            ..create_test_column()
+        };
+        let col2 = Column {
+            position: 2,
+            ..create_test_column()
+        };
+        let col3 = Column {
+            position: 1,
+            ..create_test_column()
+        };
+
+        assert!(col1 < col2);
+        assert!(col2 > col1);
+        assert_eq!(col1, col3);
+    }
+
+    #[test]
+    fn test_column_clone() {
+        let column = create_test_column();
+        let cloned = column.clone();
+
+        assert_eq!(column.name, cloned.name);
+        assert_eq!(column.duckdb_type, cloned.duckdb_type);
+        assert_eq!(column.position, cloned.position);
+    }
+
+    // ==================== Snapshot Tests ====================
+
+    #[test]
+    fn test_snapshot_display() {
+        let snapshot = Snapshot {
+            id: 1,
+            relation_name: "test_table".to_string(),
+            y_column_name: vec!["target".to_string()],
+            test_size: 0.2,
+            test_sampling: Sampling::random,
+            status: Status::successful,
+            columns: vec![],
+            analysis: None,
+            created_at: "2024-01-15".to_string(),
+            updated_at: "2024-01-15".to_string(),
+            materialized: false,
+            feature_positions: vec![],
+        };
+
+        let display = format!("{}", snapshot);
+        assert!(display.contains("Snapshot"));
+        assert!(display.contains("id: 1"));
+        assert!(display.contains("relation_name: test_table"));
+        assert!(display.contains("test_size: 0.2"));
+    }
+
+    #[test]
+    fn test_column_row_position() {
+        let position = ColumnRowPosition {
+            column_position: 3,
+            row_position: 5,
+        };
+
+        assert_eq!(position.column_position, 3);
+        assert_eq!(position.row_position, 5);
+
+        let cloned = position.clone();
+        assert_eq!(cloned.column_position, 3);
+        assert_eq!(cloned.row_position, 5);
+    }
+
+    #[test]
+    fn test_null_category_key() {
+        assert_eq!(NULL_CATEGORY_KEY, "__NULL__");
+    }
+
+    // ==================== Preprocessor Serialization Tests ====================
+
+    #[test]
+    fn test_preprocessor_serialize_deserialize() {
+        let preprocessor = Preprocessor {
+            encode: Encode::target,
+            impute: Impute::mean,
+            scale: Scale::standard,
+        };
+
+        let serialized = serde_json::to_string(&preprocessor).unwrap();
+        let deserialized: Preprocessor = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(preprocessor, deserialized);
+    }
+
+    #[test]
+    fn test_column_serialize_deserialize() {
+        let column = create_test_column();
+
+        let serialized = serde_json::to_string(&column).unwrap();
+        let deserialized: Column = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(column.name, deserialized.name);
+        assert_eq!(column.duckdb_type, deserialized.duckdb_type);
+        assert_eq!(column.position, deserialized.position);
+    }
+
+    #[test]
+    fn test_category_serialize_deserialize() {
+        let category = Category {
+            value: 2.5,
+            members: 42,
+        };
+
+        let serialized = serde_json::to_string(&category).unwrap();
+        let deserialized: Category = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(category, deserialized);
+    }
+}

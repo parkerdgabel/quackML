@@ -68,3 +68,80 @@ impl Sampling {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+
+    const ALL_SAMPLINGS: &[(&str, Sampling)] = &[
+        ("random", Sampling::random),
+        ("last", Sampling::last),
+        ("stratified", Sampling::stratified),
+    ];
+
+    #[test]
+    fn test_from_str_all_samplings() {
+        for (name, expected) in ALL_SAMPLINGS {
+            let result = Sampling::from_str(name);
+            assert!(result.is_ok(), "Failed to parse sampling: {}", name);
+            assert_eq!(result.unwrap(), *expected, "Mismatch for sampling: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_to_string_all_samplings() {
+        for (expected_name, sampling) in ALL_SAMPLINGS {
+            let result = sampling.to_string();
+            assert_eq!(result, *expected_name, "Mismatch for sampling: {:?}", sampling);
+        }
+    }
+
+    #[test]
+    fn test_from_str_roundtrip() {
+        for (name, _) in ALL_SAMPLINGS {
+            let parsed = Sampling::from_str(name).unwrap();
+            let stringified = parsed.to_string();
+            assert_eq!(stringified, *name, "Roundtrip failed for: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_from_str_invalid() {
+        let invalid_names = &[
+            "invalid",
+            "RANDOM",
+            "Random",
+            "",
+            "time_series",
+        ];
+
+        for name in invalid_names {
+            let result = Sampling::from_str(name);
+            assert!(result.is_err(), "Expected error for invalid sampling: '{}'", name);
+        }
+    }
+
+    #[test]
+    fn test_sampling_equality() {
+        assert_eq!(Sampling::random, Sampling::random);
+        assert_ne!(Sampling::random, Sampling::last);
+        assert_ne!(Sampling::stratified, Sampling::last);
+    }
+
+    #[test]
+    fn test_sampling_copy_clone() {
+        let sampling = Sampling::stratified;
+        let copied = sampling;
+        let cloned = sampling.clone();
+        assert_eq!(sampling, copied);
+        assert_eq!(sampling, cloned);
+    }
+
+    #[test]
+    fn test_sampling_debug() {
+        let sampling = Sampling::random;
+        let debug_str = format!("{:?}", sampling);
+        assert_eq!(debug_str, "random");
+    }
+}
